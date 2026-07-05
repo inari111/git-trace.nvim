@@ -3,6 +3,7 @@ local github = require("git-trace.provider.github")
 local review_git = require("git-trace.review.git")
 local worktree = require("git-trace.review.worktree")
 local qflist = require("git-trace.review.ui.qflist")
+local ui_diff = require("git-trace.review.ui.diff")
 
 ---@class GitTraceReviewSession
 ---@field pr table            -- pr_view result
@@ -11,8 +12,13 @@ local qflist = require("git-trace.review.ui.qflist")
 ---@field merge_base string
 ---@field files GitTraceReviewFile[]
 ---@field files_by_path table<string, GitTraceReviewFile>  -- key: absolute worktree path
----@field diff_enabled boolean -- used by a later task; starts true
+---@field diff_enabled boolean -- toggled between diff and single-file view; starts true
 ---@field augroup integer      -- nvim_create_augroup("GitTraceReview", {clear=true})
+---@field base_cache table<string, string[]>|nil  -- cached base revision content, keyed by path
+---@field saved_winopts table<integer, table>|nil -- diff-sensitive winopts, keyed by window handle
+---@field base_win integer|nil -- window handle of the base (left) side of the active diff
+---@field base_buf integer|nil -- scratch buffer handle of the base side
+---@field main_win integer|nil -- window handle of the worktree file (right) side
 
 local M = {}
 
@@ -74,7 +80,7 @@ function M.open(number)
       files_by_path[ctx.worktree .. "/" .. f.path] = f
     end
 
-    M._session = {
+    local session = {
       pr = ctx.pr,
       repo_root = ctx.root,
       worktree = ctx.worktree,
@@ -84,6 +90,23 @@ function M.open(number)
       diff_enabled = true,
       augroup = vim.api.nvim_create_augroup("GitTraceReview", { clear = true }),
     }
+    M._session = session
+
+    -- Drive the native diff whenever one of the PR's files is displayed.
+    -- Scratch (gittrace://) and unrelated buffers fall through the lookup.
+    vim.api.nvim_create_autocmd("BufWinEnter", {
+      group = session.augroup,
+      callback = function(args)
+        if M._session ~= session then
+          return
+        end
+        local file = session.files_by_path[vim.api.nvim_buf_get_name(args.buf)]
+        if not file then
+          return
+        end
+        ui_diff.attach(session, file, vim.api.nvim_get_current_win())
+      end,
+    })
 
     qflist.set(ctx.pr, files, ctx.worktree)
     notify(("PR #%d: %d files"):format(ctx.pr.number, #files), vim.log.levels.INFO)
@@ -198,9 +221,19 @@ function M.close()
     return
   end
 
+  ui_diff.teardown(M._session)
   pcall(vim.api.nvim_del_augroup_by_id, M._session.augroup)
   qflist.clear()
   M._session = nil
+end
+
+---Toggle the current review between diff and single-file view.
+function M.toggle_diff()
+  if not M._session then
+    notify("No active review session", vim.log.levels.WARN)
+    return
+  end
+  ui_diff.toggle(M._session)
 end
 
 ---Remove every git-trace review worktree after confirmation.
