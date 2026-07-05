@@ -75,6 +75,14 @@ function M.validate()
     )
   end
 
+  if type(c.review) ~= "table" then
+    vim.notify(
+      "[git-trace] Invalid review config. Must be a table",
+      vim.log.levels.ERROR
+    )
+    c.review = vim.deepcopy(defaults.review)
+  end
+
   local review = c.review
   local limit = review.pr_list_limit
   if type(limit) ~= "number" or limit <= 0 or limit ~= math.floor(limit) then

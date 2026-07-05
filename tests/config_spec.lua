@@ -56,6 +56,17 @@ describe("config", function()
       assert.equals(30, c.review.pr_list_limit)
     end)
 
+    it("resets a non-table review to defaults without crashing", function()
+      local orig_notify = vim.notify
+      vim.notify = function() end
+      local ok, c = pcall(config.apply, { review = false })
+      vim.notify = orig_notify
+      assert.is_true(ok)
+      assert.equals(30, c.review.pr_list_limit)
+      assert.is_true(c.review.open_qf)
+      assert.equals("<leader>rd", c.review.keymaps.toggle_diff)
+    end)
+
     it("allows review.keymaps = false to disable all keymaps", function()
       local c = config.apply({ review = { keymaps = false } })
       assert.is_false(c.review.keymaps)
