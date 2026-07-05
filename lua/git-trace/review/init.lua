@@ -4,6 +4,7 @@ local review_git = require("git-trace.review.git")
 local worktree = require("git-trace.review.worktree")
 local qflist = require("git-trace.review.ui.qflist")
 local ui_diff = require("git-trace.review.ui.diff")
+local review_signs = require("git-trace.review.ui.signs")
 
 ---@class GitTraceReviewSession
 ---@field pr table            -- pr_view result
@@ -15,6 +16,7 @@ local ui_diff = require("git-trace.review.ui.diff")
 ---@field diff_enabled boolean -- toggled between diff and single-file view; starts true
 ---@field augroup integer      -- nvim_create_augroup("GitTraceReview", {clear=true})
 ---@field base_cache table<string, string[]>|nil  -- cached base revision content, keyed by path
+---@field hunk_cache table<string, GitTraceHunk[]>|nil -- cached diff hunks, keyed by path
 ---@field saved_winopts table<integer, table>|nil -- diff-sensitive winopts, keyed by window handle
 ---@field base_win integer|nil -- window handle of the base (left) side of the active diff
 ---@field base_buf integer|nil -- scratch buffer handle of the base side
@@ -105,6 +107,22 @@ function M.open(number)
           return
         end
         ui_diff.attach(session, file, vim.api.nvim_get_current_win())
+      end,
+    })
+
+    -- Re-fetch and redraw change signs after an external edit (e.g. `:e`)
+    -- reloads a reviewed file; diff view has no signs to refresh.
+    vim.api.nvim_create_autocmd("BufReadPost", {
+      group = session.augroup,
+      callback = function(args)
+        if M._session ~= session then
+          return
+        end
+        local file = session.files_by_path[vim.api.nvim_buf_get_name(args.buf)]
+        if not file then
+          return
+        end
+        ui_diff.refresh_signs(session, file, args.buf)
       end,
     })
 
@@ -234,6 +252,63 @@ function M.toggle_diff()
     return
   end
   ui_diff.toggle(M._session)
+end
+
+---Resolve the window/file to jump hunks in for `next_hunk`/`prev_hunk`, or nil
+---(after a WARN notify) when there is no active session, the current buffer
+---isn't one of its files, or the session is showing a native diff (where the
+---built-in `]c` / `[c` already jump hunks).
+---@return integer|nil win
+---@return GitTraceReviewFile|nil file
+local function hunk_jump_target()
+  if not M._session then
+    notify("No active review session", vim.log.levels.WARN)
+    return nil, nil
+  end
+
+  local win = vim.api.nvim_get_current_win()
+  local buf = vim.api.nvim_win_get_buf(win)
+  local file = M._session.files_by_path[vim.api.nvim_buf_get_name(buf)]
+  if not file then
+    notify("Current buffer is not part of the active review", vim.log.levels.WARN)
+    return nil, nil
+  end
+  if M._session.diff_enabled then
+    notify("Use ]c / [c to jump hunks in diff view", vim.log.levels.WARN)
+    return nil, nil
+  end
+
+  return win, file
+end
+
+---Jump the cursor to a hunk in the current single-file review buffer.
+---@param jump fun(win: integer, hunks: GitTraceHunk[]) signs.next_hunk or signs.prev_hunk
+local function jump_hunk(jump)
+  local win, file = hunk_jump_target()
+  if not win then
+    return
+  end
+
+  local session = M._session
+  local expected_buf = vim.api.nvim_win_get_buf(win)
+  ui_diff.with_hunks(session, file, function(hunks)
+    -- The window may have moved on to a different buffer before this
+    -- (possibly async, on a cache miss) fetch resolved.
+    if not vim.api.nvim_win_is_valid(win) or vim.api.nvim_win_get_buf(win) ~= expected_buf then
+      return
+    end
+    jump(win, hunks)
+  end)
+end
+
+---Move the cursor to the next changed hunk in the current single-file review buffer.
+function M.next_hunk()
+  jump_hunk(review_signs.next_hunk)
+end
+
+---Move the cursor to the previous changed hunk in the current single-file review buffer.
+function M.prev_hunk()
+  jump_hunk(review_signs.prev_hunk)
 end
 
 ---Remove every git-trace review worktree after confirmation.

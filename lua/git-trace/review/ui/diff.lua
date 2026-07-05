@@ -1,4 +1,5 @@
 local review_git = require("git-trace.review.git")
+local review_signs = require("git-trace.review.ui.signs")
 
 local M = {}
 
@@ -137,6 +138,50 @@ local function with_base_lines(session, file, on_lines)
   end)
 end
 
+---Fetch the diff hunks of `file` against the merge base, using the session cache.
+---Errors are reported and swallowed (callback not called).
+---@param session GitTraceReviewSession
+---@param file GitTraceReviewFile
+---@param on_hunks fun(hunks: GitTraceHunk[])
+function M.with_hunks(session, file, on_hunks)
+  session.hunk_cache = session.hunk_cache or {}
+
+  if session.hunk_cache[file.path] then
+    on_hunks(session.hunk_cache[file.path])
+    return
+  end
+
+  review_git.diff_hunks(session.merge_base, file.path, file.old_path, session.worktree, function(hunks, err)
+    if err or not hunks then
+      notify(err or ("Failed to load diff hunks for " .. file.path), vim.log.levels.ERROR)
+      return
+    end
+    session.hunk_cache[file.path] = hunks
+    on_hunks(hunks)
+  end)
+end
+
+---Fetch and apply the change signs of `file` to `win`'s buffer. No-op for binary
+---or deleted files, which have no meaningful single-file diff to mark. Guards
+---against the window having moved on to a different file before the async
+---hunk fetch resolves.
+---@param session GitTraceReviewSession
+---@param file GitTraceReviewFile
+---@param win integer window handle
+local function apply_signs(session, file, win)
+  if file.binary or file.status == "D" then
+    return
+  end
+
+  local expected = abs_path(session, file)
+  M.with_hunks(session, file, function(hunks)
+    if not win_still_shows(win, expected) then
+      return
+    end
+    review_signs.apply(vim.api.nvim_win_get_buf(win), hunks)
+  end)
+end
+
 ---Show `file` as a native diff: a scratch base buffer on the left and the real
 ---worktree file on the right, both in diff mode, focus left on the worktree file.
 ---@param session GitTraceReviewSession
@@ -151,6 +196,8 @@ function M.show_diff(session, file, win)
     end
 
     local main_buf = vim.api.nvim_win_get_buf(win)
+    -- Diff mode colors changes itself; single-view signs would duplicate that.
+    review_signs.clear(main_buf)
     local base_buf = create_base_buf(session, file, main_buf, lines)
 
     -- Save the main window's diff-sensitive options before diffthis touches them.
@@ -179,13 +226,37 @@ function M.show_diff(session, file, win)
   end)
 end
 
----Show `file` as a single (non-diff) view, tearing down any active diff layout.
----Task 4 hooks change signs in here; this task only removes the diff.
+---Show `file` as a single (non-diff) view, tearing down any active diff layout
+---and marking its changed regions with signs.
 ---@param session GitTraceReviewSession
 ---@param file GitTraceReviewFile
 ---@param win integer window handle
 function M.show_single(session, file, win)
   close_diff(session)
+  apply_signs(session, file, win)
+end
+
+---Re-fetch a file's hunks and redraw its signs, e.g. after an external edit
+---(`:e`) reloaded the buffer and invalidated the cached hunks. No-op for
+---binary/deleted files or while the session is showing a native diff (which
+---has no signs to refresh).
+---@param session GitTraceReviewSession
+---@param file GitTraceReviewFile
+---@param bufnr integer buffer handle
+function M.refresh_signs(session, file, bufnr)
+  if file.binary or file.status == "D" or session.diff_enabled then
+    return
+  end
+
+  session.hunk_cache = session.hunk_cache or {}
+  session.hunk_cache[file.path] = nil
+
+  M.with_hunks(session, file, function(hunks)
+    if not vim.api.nvim_buf_is_valid(bufnr) then
+      return
+    end
+    review_signs.apply(bufnr, hunks)
+  end)
 end
 
 ---Swap a placeholder empty buffer (deleted file) for a read-only base buffer,

@@ -164,3 +164,125 @@ describe("review.open", function()
     assert.is_true(has_level(vim.log.levels.WARN))
   end)
 end)
+
+describe("review.next_hunk / review.prev_hunk", function()
+  local WT = "/gittrace-hunkjump-test-wt"
+  local orig = {}
+  local notifications
+  local win
+
+  ---@param files GitTraceReviewFile[]
+  ---@param diff_enabled boolean|nil
+  local function make_session(files, diff_enabled)
+    local files_by_path = {}
+    for _, f in ipairs(files) do
+      files_by_path[WT .. "/" .. f.path] = f
+    end
+    return {
+      pr = { number = 3 },
+      repo_root = "/repo",
+      worktree = WT,
+      merge_base = "cafef00d1234567890",
+      files = files,
+      files_by_path = files_by_path,
+      diff_enabled = diff_enabled or false,
+    }
+  end
+
+  local function open_file(relpath, lines)
+    local buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(buf, WT .. "/" .. relpath)
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+    win = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_set_buf(win, buf)
+    return win, buf
+  end
+
+  before_each(function()
+    orig.diff_hunks = review_git.diff_hunks
+    orig.notify = vim.notify
+    notifications = {}
+    vim.notify = function(msg, level)
+      table.insert(notifications, { msg = msg, level = level })
+    end
+  end)
+
+  after_each(function()
+    review_git.diff_hunks = orig.diff_hunks
+    vim.notify = orig.notify
+    review.close()
+    pcall(vim.cmd, "silent! only")
+    pcall(vim.cmd, "silent! diffoff!")
+    pcall(vim.cmd, "silent! %bwipeout!")
+  end)
+
+  it("warns when there is no active session", function()
+    review.next_hunk()
+
+    assert.equals(1, #notifications)
+    assert.equals(vim.log.levels.WARN, notifications[1].level)
+    assert.matches("No active review session", notifications[1].msg)
+  end)
+
+  it("warns when the current buffer is not part of the review", function()
+    review._session = make_session({ { path = "a.lua", status = "M", binary = false } })
+    open_file("unrelated.lua", { "l1" })
+
+    review.prev_hunk()
+
+    assert.equals(1, #notifications)
+    assert.matches("not part of the active review", notifications[1].msg)
+  end)
+
+  it("warns and defers to native diff jumps when the session is in diff view", function()
+    review._session = make_session({ { path = "a.lua", status = "M", binary = false } }, true)
+    open_file("a.lua", { "l1", "l2", "l3" })
+
+    review.next_hunk()
+
+    assert.equals(1, #notifications)
+    assert.matches("diff view", notifications[1].msg)
+  end)
+
+  it("moves the cursor to the next hunk in single-file view", function()
+    review._session = make_session({ { path = "a.lua", status = "M", binary = false } })
+    review_git.diff_hunks = function(_, _, _, _, cb)
+      cb({ { old_start = 2, old_count = 1, new_start = 2, new_count = 1 } }, nil)
+    end
+    open_file("a.lua", { "l1", "l2", "l3" })
+    vim.api.nvim_win_set_cursor(win, { 1, 0 })
+
+    review.next_hunk()
+
+    assert.same({ 2, 0 }, vim.api.nvim_win_get_cursor(win))
+  end)
+
+  it("moves the cursor to the previous hunk in single-file view", function()
+    review._session = make_session({ { path = "a.lua", status = "M", binary = false } })
+    review_git.diff_hunks = function(_, _, _, _, cb)
+      cb({ { old_start = 2, old_count = 1, new_start = 2, new_count = 1 } }, nil)
+    end
+    open_file("a.lua", { "l1", "l2", "l3" })
+    vim.api.nvim_win_set_cursor(win, { 3, 0 })
+
+    review.prev_hunk()
+
+    assert.same({ 2, 0 }, vim.api.nvim_win_get_cursor(win))
+  end)
+
+  it("caches hunks across repeated jumps (single fetch)", function()
+    review._session = make_session({ { path = "a.lua", status = "M", binary = false } })
+    local fetch_count = 0
+    review_git.diff_hunks = function(_, _, _, _, cb)
+      fetch_count = fetch_count + 1
+      cb({ { old_start = 2, old_count = 1, new_start = 2, new_count = 1 } }, nil)
+    end
+    open_file("a.lua", { "l1", "l2", "l3" })
+    vim.api.nvim_win_set_cursor(win, { 1, 0 })
+
+    review.next_hunk()
+    review.next_hunk()
+
+    assert.equals(1, fetch_count)
+  end)
+end)

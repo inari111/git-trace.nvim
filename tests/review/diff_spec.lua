@@ -49,15 +49,22 @@ describe("review.ui.diff", function()
 
   before_each(function()
     orig.show_file = review_git.show_file
+    orig.diff_hunks = review_git.diff_hunks
     orig.notify = vim.notify
     notifications = {}
     vim.notify = function(msg, level)
       table.insert(notifications, { msg = msg, level = level })
     end
+    -- Single-file view (Task 4) fetches hunks to draw signs; default to none so
+    -- tests that don't care about signs don't need to stub this themselves.
+    review_git.diff_hunks = function(_, _, _, _, cb)
+      cb({}, nil)
+    end
   end)
 
   after_each(function()
     review_git.show_file = orig.show_file
+    review_git.diff_hunks = orig.diff_hunks
     vim.notify = orig.notify
     pcall(vim.cmd, "silent! only")
     pcall(vim.cmd, "silent! diffoff!")
