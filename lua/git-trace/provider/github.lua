@@ -2,6 +2,17 @@ local config = require("git-trace.config")
 
 local M = {}
 
+---Translate gh CLI stderr into a friendlier auth message when applicable.
+---@param stderr string|nil
+---@return string
+local function translate_gh_error(stderr)
+  stderr = stderr or ""
+  if stderr:match("auth") or stderr:match("login") then
+    return "gh auth login required. Run: gh auth login"
+  end
+  return stderr
+end
+
 ---Parse JSON output from `gh pr list --json number,url`.
 ---@param json_str string
 ---@return table[]|nil list of {number: integer, url: string}
@@ -70,16 +81,79 @@ function M.find_prs(hash, cwd, callback)
     function(result)
       vim.schedule(function()
         if result.code ~= 0 then
-          local stderr = result.stderr or ""
-          if stderr:match("auth") or stderr:match("login") then
-            callback(nil, "gh auth login required. Run: gh auth login")
-          else
-            callback(nil, stderr)
-          end
+          callback(nil, translate_gh_error(result.stderr))
           return
         end
         local prs = M.parse_pr_list(result.stdout)
         callback(prs, nil)
+      end)
+    end
+  )
+end
+
+---Parse JSON output from `gh pr view --json number,title,url,state,baseRefName,headRefOid`.
+---@param json_str string
+---@return table|nil pr_meta {number, title, url, state, base_ref, head_oid}
+function M.parse_pr_view(json_str)
+  if not json_str or json_str == "" then
+    return nil
+  end
+  local ok, decoded = pcall(vim.json.decode, json_str)
+  if not ok or type(decoded) ~= "table" then
+    return nil
+  end
+  if not decoded.number or not decoded.baseRefName then
+    return nil
+  end
+  return {
+    number = decoded.number,
+    title = decoded.title,
+    url = decoded.url,
+    state = decoded.state,
+    base_ref = decoded.baseRefName,
+    head_oid = decoded.headRefOid,
+  }
+end
+
+---Fetch PR metadata using gh CLI.
+---@param number integer PR number
+---@param cwd string directory to run gh from
+---@param callback fun(pr_meta: table|nil, err: string|nil)
+function M.pr_view(number, cwd, callback)
+  local gh = config.values.gh_path
+
+  vim.system(
+    { gh, "pr", "view", tostring(number), "--json", "number,title,url,state,baseRefName,headRefOid" },
+    { text = true, cwd = cwd },
+    function(result)
+      vim.schedule(function()
+        if result.code ~= 0 then
+          callback(nil, translate_gh_error(result.stderr))
+          return
+        end
+        callback(M.parse_pr_view(result.stdout), nil)
+      end)
+    end
+  )
+end
+
+---List open PRs using gh CLI.
+---@param cwd string directory to run gh from
+---@param callback fun(prs: table[]|nil, err: string|nil)
+function M.list_open_prs(cwd, callback)
+  local gh = config.values.gh_path
+  local limit = config.values.review.pr_list_limit
+
+  vim.system(
+    { gh, "pr", "list", "--state", "open", "--json", "number,title,author", "--limit", tostring(limit) },
+    { text = true, cwd = cwd },
+    function(result)
+      vim.schedule(function()
+        if result.code ~= 0 then
+          callback(nil, translate_gh_error(result.stderr))
+          return
+        end
+        callback(M.parse_pr_list(result.stdout), nil)
       end)
     end
   )
