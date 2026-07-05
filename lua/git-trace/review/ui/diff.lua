@@ -202,6 +202,9 @@ local function show_deleted(session, file, win)
     end
     local placeholder = vim.api.nvim_win_get_buf(win)
     local base_buf = create_base_buf(session, file, placeholder, lines)
+    -- Marks the buffer as a deleted-file view so toggle can refuse it: the
+    -- scratch buffer's gittrace:// name never matches files_by_path.
+    vim.b[base_buf].git_trace_deleted = file.path
     vim.api.nvim_win_set_buf(win, base_buf)
     pcall(vim.api.nvim_buf_delete, placeholder, { force = true })
     notify(("%s was deleted in this PR"):format(file.path), vim.log.levels.INFO)
@@ -227,11 +230,15 @@ function M.attach(session, file, win)
   -- A previous file's base window may linger when quickfix reuses this window
   -- (:cnext). Tear it down before setting up the new file.
   close_diff(session)
+  vim.w[win].git_trace_attached = nil
 
   if file.binary then
     notify("binary file: " .. file.path, vim.log.levels.INFO)
   elseif file.status == "D" then
+    -- Quickfix creates a fresh placeholder buffer on every visit to a deleted
+    -- entry, so leave no marker: the next visit must swap the base in again.
     show_deleted(session, file, win)
+    return
   elseif session.diff_enabled then
     M.show_diff(session, file, win)
   else
@@ -247,10 +254,12 @@ end
 ---@param session GitTraceReviewSession
 function M.toggle(session)
   local win = vim.api.nvim_get_current_win()
-  local name = vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(win))
-  local file = session.files_by_path[name]
+  local buf = vim.api.nvim_win_get_buf(win)
+  local file = session.files_by_path[vim.api.nvim_buf_get_name(buf)]
 
-  if file and (file.binary or file.status == "D") then
+  -- Deleted files are shown through a base scratch buffer whose gittrace://
+  -- name is not in files_by_path, hence the buffer-local marker check.
+  if vim.b[buf].git_trace_deleted ~= nil or (file and (file.binary or file.status == "D")) then
     notify("diff view is not available for this file", vim.log.levels.WARN)
     return
   end

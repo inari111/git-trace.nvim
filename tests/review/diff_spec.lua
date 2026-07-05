@@ -150,6 +150,49 @@ describe("review.ui.diff", function()
     assert.is_not_nil(notified_matching("not available"))
   end)
 
+  it("warns and keeps the mode when toggling on a deleted file", function()
+    local session = make_session({ { path = "gone.lua", status = "D", binary = false } })
+    local file = session.files[1]
+    review_git.show_file = function(_, _, _, cb)
+      cb({ "old1" }, nil)
+    end
+    local win = open_file("gone.lua", {})
+
+    ui_diff.attach(session, file, win)
+    assert.equals(1, win_count())
+
+    ui_diff.toggle(session)
+
+    assert.is_true(session.diff_enabled) -- unchanged
+    assert.equals(1, win_count())
+    assert.is_not_nil(notified_matching("not available"))
+  end)
+
+  it("re-attaches a deleted file when its quickfix entry is reopened", function()
+    local session = make_session({ { path = "gone.lua", status = "D", binary = false } })
+    local file = session.files[1]
+    review_git.show_file = function(_, _, _, cb)
+      cb({ "old1", "old2" }, nil)
+    end
+    local win = open_file("gone.lua", {})
+
+    ui_diff.attach(session, file, win)
+    assert.same({ "old1", "old2" }, vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(win), 0, -1, false))
+
+    -- Simulate quickfix re-selecting the same entry: a fresh empty placeholder
+    -- lands in the window while the window-local marker is left untouched.
+    local placeholder2 = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(placeholder2, WT .. "/gone.lua")
+    vim.api.nvim_win_set_buf(win, placeholder2)
+
+    ui_diff.attach(session, file, win)
+
+    local shown = vim.api.nvim_win_get_buf(win)
+    assert.is_true(shown ~= placeholder2)
+    assert.same({ "old1", "old2" }, vim.api.nvim_buf_get_lines(shown, 0, -1, false))
+    assert.is_false(vim.api.nvim_buf_is_valid(placeholder2))
+  end)
+
   it("does not create a second base window when attach runs twice", function()
     local session = make_session({ { path = "a.lua", status = "M", binary = false } })
     local file = session.files[1]
