@@ -24,7 +24,7 @@ function M.setup(opts)
     local review = require("git-trace.review")
     if cmd_opts.args ~= nil and cmd_opts.args ~= "" then
       local number = tonumber(cmd_opts.args)
-      if not number then
+      if not number or number ~= math.floor(number) or number < 1 then
         vim.notify("[git-trace] Invalid PR number: " .. cmd_opts.args, vim.log.levels.ERROR)
         return
       end
