@@ -8,11 +8,25 @@ local function notify(msg, level)
   vim.notify("[git-trace] " .. msg, level)
 end
 
----Highlight group linked to for each mark kind. `default = true` lets users
----override these in their colorscheme/config without git-trace clobbering it.
-vim.api.nvim_set_hl(0, "GitTraceReviewAdd", { link = "DiffAdd", default = true })
-vim.api.nvim_set_hl(0, "GitTraceReviewChange", { link = "DiffChange", default = true })
-vim.api.nvim_set_hl(0, "GitTraceReviewDelete", { link = "DiffDelete", default = true })
+---Link each mark kind's highlight group to a Diff* group. `default = true` lets
+---users override these in their colorscheme/config without git-trace clobbering
+---it. Re-applied on ColorScheme since switching a colorscheme (via `:hi clear`)
+---can drop the links.
+local function setup_highlights()
+  vim.api.nvim_set_hl(0, "GitTraceReviewAdd", { link = "DiffAdd", default = true })
+  vim.api.nvim_set_hl(0, "GitTraceReviewChange", { link = "DiffChange", default = true })
+  vim.api.nvim_set_hl(0, "GitTraceReviewDelete", { link = "DiffDelete", default = true })
+end
+
+setup_highlights()
+
+-- Restore the links after a colorscheme change wipes them. The augroup is
+-- cleared on (re)load so the autocmd is registered exactly once.
+vim.api.nvim_create_autocmd("ColorScheme", {
+  group = vim.api.nvim_create_augroup("GitTraceReviewSigns", { clear = true }),
+  desc = "Re-link git-trace review highlight groups after a colorscheme change",
+  callback = setup_highlights,
+})
 
 local HL_GROUP = {
   add = "GitTraceReviewAdd",

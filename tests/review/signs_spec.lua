@@ -1,5 +1,22 @@
 local signs = require("git-trace.review.ui.signs")
 
+describe("review.ui.signs highlight resilience", function()
+  it("registers a ColorScheme autocmd under its own augroup", function()
+    -- Errors (not just returns empty) when the augroup does not exist, so this
+    -- fails before the autocmd is wired.
+    local autocmds = vim.api.nvim_get_autocmds({ event = "ColorScheme", group = "GitTraceReviewSigns" })
+    assert.is_true(#autocmds >= 1)
+  end)
+
+  it("(re)establishes the review highlight links when ColorScheme fires", function()
+    vim.api.nvim_exec_autocmds("ColorScheme", {})
+
+    assert.equals("DiffAdd", vim.api.nvim_get_hl(0, { name = "GitTraceReviewAdd", link = true }).link)
+    assert.equals("DiffChange", vim.api.nvim_get_hl(0, { name = "GitTraceReviewChange", link = true }).link)
+    assert.equals("DiffDelete", vim.api.nvim_get_hl(0, { name = "GitTraceReviewDelete", link = true }).link)
+  end)
+end)
+
 describe("review.ui.signs", function()
   describe("marks_for", function()
     it("expands an add hunk across its new-side line range", function()
