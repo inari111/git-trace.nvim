@@ -192,6 +192,42 @@ describe("review.worktree", function()
       assert.equals("still failing", received_err)
     end)
 
+    it("matches an existing worktree registered under a symlinked base dir", function()
+      -- worktree_dir points at a symlink; `git worktree list` reports the
+      -- resolved realpath, so a raw string compare would miss the match.
+      -- before_each stubs vim.fn.mkdir/delete, so use the real ones for setup.
+      local scratch = vim.fn.tempname()
+      originals.mkdir(scratch .. "/real-base", "p")
+      vim.fn.system({ "ln", "-s", scratch .. "/real-base", scratch .. "/link-base" })
+      config.values.review.worktree_dir = scratch .. "/link-base"
+
+      local resolved_wt =
+        worktree.worktree_path(scratch .. "/real-base", worktree.repo_id(remote, root), 42)
+      review_git.worktree_list = function(_, cb)
+        cb({ { path = resolved_wt } }, nil)
+      end
+      local checkout_called = false
+      review_git.worktree_checkout_detach = function(_, _, cb)
+        checkout_called = true
+        cb(true, nil)
+      end
+      local add_called = false
+      review_git.worktree_add = function()
+        add_called = true
+      end
+
+      local received_path
+      worktree.ensure(root, remote, 42, "main", function(p)
+        received_path = p
+      end)
+
+      assert.is_true(checkout_called)
+      assert.is_false(add_called)
+      assert.equals(worktree.worktree_path(scratch .. "/link-base", worktree.repo_id(remote, root), 42), received_path)
+
+      originals.delete(scratch, "rf")
+    end)
+
     it("propagates a fetch error without listing worktrees", function()
       review_git.fetch_pr = function(_, _, _, cb)
         cb(nil, "fetch boom")

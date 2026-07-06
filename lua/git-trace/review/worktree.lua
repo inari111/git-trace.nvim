@@ -107,8 +107,12 @@ function M.ensure(repo_root, remote_url, pr_number, base_ref, callback)
         return
       end
 
+      -- Normalize both sides: `git worktree list` reports realpaths, while our
+      -- computed path may run through a symlinked worktree_dir. Comparing raw
+      -- strings would miss the registration and wrongly fall through to add.
+      local resolved_path = vim.fn.resolve(path)
       for _, wt in ipairs(worktrees or {}) do
-        if wt.path == path then
+        if vim.fn.resolve(wt.path) == resolved_path then
           refresh_existing()
           return
         end
@@ -123,7 +127,9 @@ end
 ---@param repo_root string absolute path to the main repository
 ---@param callback fun(removed_count: integer|nil, err: string|nil)
 function M.clean(repo_root, callback)
-  local base_prefix = M.resolve_base_dir() .. "/"
+  -- Normalize both sides so a symlinked worktree_dir still matches the realpaths
+  -- reported by `git worktree list`.
+  local base_prefix = vim.fn.resolve(M.resolve_base_dir()) .. "/"
 
   local function finalize(removed)
     review_git.worktree_prune(repo_root, function(_, prune_err)
@@ -149,7 +155,8 @@ function M.clean(repo_root, callback)
 
     local targets = {}
     for _, wt in ipairs(worktrees or {}) do
-      if vim.startswith(wt.path, base_prefix) then
+      -- Keep the original path for removal; git expects the registered path.
+      if vim.startswith(vim.fn.resolve(wt.path), base_prefix) then
         table.insert(targets, wt.path)
       end
     end
