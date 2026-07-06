@@ -268,61 +268,92 @@ function M.toggle_diff()
   ui_diff.toggle(M._session)
 end
 
----Resolve the window/file to jump hunks in for `next_hunk`/`prev_hunk`, or nil
----(after a WARN notify) when there is no active session, the current buffer
----isn't one of its files, or the session is showing a native diff (where the
----built-in `]c` / `[c` already jump hunks).
----@return integer|nil win
----@return GitTraceReviewFile|nil file
-local function hunk_jump_target()
-  if not M._session then
+---Jump to a changed hunk from the current review buffer. In single-file view
+---this uses the change-sign anchors; in diff view it defers to the built-in
+---`]c` / `[c` so the same key jumps hunks in either view. Warns and does nothing
+---when there is no session or the current buffer isn't part of the review.
+---@param diff_key "]c"|"[c" native diff jump to run in diff view
+---@param sign_jump fun(win: integer, hunks: GitTraceHunk[]) signs.next_hunk or signs.prev_hunk
+local function jump_hunk(diff_key, sign_jump)
+  local session = M._session
+  if not session then
     notify("No active review session", vim.log.levels.WARN)
-    return nil, nil
+    return
   end
 
   local win = vim.api.nvim_get_current_win()
   local buf = vim.api.nvim_win_get_buf(win)
-  local file = M._session.files_by_path[vim.api.nvim_buf_get_name(buf)]
-  if not file then
-    notify("Current buffer is not part of the active review", vim.log.levels.WARN)
-    return nil, nil
-  end
-  if M._session.diff_enabled then
-    notify("Use ]c / [c to jump hunks in diff view", vim.log.levels.WARN)
-    return nil, nil
-  end
+  local file = session.files_by_path[vim.api.nvim_buf_get_name(buf)]
 
-  return win, file
-end
-
----Jump the cursor to a hunk in the current single-file review buffer.
----@param jump fun(win: integer, hunks: GitTraceHunk[]) signs.next_hunk or signs.prev_hunk
-local function jump_hunk(jump)
-  local win, file = hunk_jump_target()
-  if not win then
+  if session.diff_enabled then
+    -- The built-in diff jump only makes sense on the diff's own windows (the
+    -- worktree file or its base scratch); elsewhere warn like single view does.
+    if file or buf == session.base_buf then
+      pcall(vim.cmd, "normal! " .. diff_key)
+    else
+      notify("Current buffer is not part of the active review", vim.log.levels.WARN)
+    end
     return
   end
 
-  local session = M._session
-  local expected_buf = vim.api.nvim_win_get_buf(win)
+  if not file then
+    notify("Current buffer is not part of the active review", vim.log.levels.WARN)
+    return
+  end
+
+  local expected_buf = buf
   ui_diff.with_hunks(session, file, function(hunks)
     -- The window may have moved on to a different buffer before this
     -- (possibly async, on a cache miss) fetch resolved.
     if not vim.api.nvim_win_is_valid(win) or vim.api.nvim_win_get_buf(win) ~= expected_buf then
       return
     end
-    jump(win, hunks)
+    sign_jump(win, hunks)
   end)
 end
 
----Move the cursor to the next changed hunk in the current single-file review buffer.
+---Move the cursor to the next changed hunk (single view) or next diff change
+---(diff view) in the current review buffer.
 function M.next_hunk()
-  jump_hunk(review_signs.next_hunk)
+  jump_hunk("]c", review_signs.next_hunk)
 end
 
----Move the cursor to the previous changed hunk in the current single-file review buffer.
+---Move the cursor to the previous changed hunk (single view) or previous diff
+---change (diff view) in the current review buffer.
 function M.prev_hunk()
-  jump_hunk(review_signs.prev_hunk)
+  jump_hunk("[c", review_signs.prev_hunk)
+end
+
+---Move the quickfix cursor to the next/previous changed file. Focuses the
+---session's main (right) window first when it is valid, so `:cnext` reuses it:
+---running the raw quickfix jump from the base (left) diff window opens the file
+---in the wrong window and breaks the layout.
+---@param cmd fun() vim.cmd.cnext or vim.cmd.cprev
+---@param edge string INFO message shown when already at the first/last file
+local function jump_file(cmd, edge)
+  if not M._session then
+    notify("No active review session", vim.log.levels.WARN)
+    return
+  end
+
+  local main_win = M._session.main_win
+  if main_win and vim.api.nvim_win_is_valid(main_win) then
+    vim.api.nvim_set_current_win(main_win)
+  end
+
+  if not pcall(cmd) then
+    notify(edge, vim.log.levels.INFO)
+  end
+end
+
+---Open the next changed file of the PR from the quickfix list.
+function M.next_file()
+  jump_file(vim.cmd.cnext, "last file")
+end
+
+---Open the previous changed file of the PR from the quickfix list.
+function M.prev_file()
+  jump_file(vim.cmd.cprev, "first file")
 end
 
 ---Remove every git-trace review worktree after confirmation.

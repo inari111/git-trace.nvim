@@ -366,14 +366,27 @@ describe("review.next_hunk / review.prev_hunk", function()
     assert.matches("not part of the active review", notifications[1].msg)
   end)
 
-  it("warns and defers to native diff jumps when the session is in diff view", function()
+  it("defers to native diff jumps without warning when the session is in diff view", function()
     review._session = make_session({ { path = "a.lua", status = "M", binary = false } }, true)
     open_file("a.lua", { "l1", "l2", "l3" })
+
+    assert.has_no.errors(function()
+      review.next_hunk()
+    end)
+
+    -- In diff view next_hunk/prev_hunk fall back to the built-in ]c / [c, so the
+    -- old "use ]c / [c" warning must no longer fire.
+    assert.equals(0, #notifications)
+  end)
+
+  it("warns when hunk jumping outside the review while a diff session is active", function()
+    review._session = make_session({ { path = "a.lua", status = "M", binary = false } }, true)
+    open_file("unrelated.lua", { "l1" })
 
     review.next_hunk()
 
     assert.equals(1, #notifications)
-    assert.matches("diff view", notifications[1].msg)
+    assert.matches("not part of the active review", notifications[1].msg)
   end)
 
   it("moves the cursor to the next hunk in single-file view", function()
@@ -416,5 +429,80 @@ describe("review.next_hunk / review.prev_hunk", function()
     review.next_hunk()
 
     assert.equals(1, fetch_count)
+  end)
+end)
+
+describe("review.next_file / review.prev_file", function()
+  local orig = {}
+  local notifications
+
+  before_each(function()
+    orig.notify = vim.notify
+    notifications = {}
+    vim.notify = function(msg, level)
+      table.insert(notifications, { msg = msg, level = level })
+    end
+  end)
+
+  after_each(function()
+    vim.notify = orig.notify
+    review._session = nil
+    pcall(vim.cmd, "silent! only")
+    pcall(vim.fn.setqflist, {}, "r", { items = {} })
+    pcall(vim.cmd, "silent! %bwipeout!")
+  end)
+
+  local function matched(pattern)
+    for _, n in ipairs(notifications) do
+      if type(n.msg) == "string" and n.msg:match(pattern) then
+        return n
+      end
+    end
+    return nil
+  end
+
+  it("warns when there is no active session", function()
+    review.next_file()
+
+    assert.equals(1, #notifications)
+    assert.equals(vim.log.levels.WARN, notifications[1].level)
+  end)
+
+  it("focuses the main window before advancing the quickfix list", function()
+    pcall(vim.cmd, "silent! only")
+    local base_win = vim.api.nvim_get_current_win()
+    vim.cmd("vsplit")
+    local main_win = vim.api.nvim_get_current_win()
+    vim.api.nvim_set_current_win(base_win)
+
+    review._session = { main_win = main_win, files = {}, files_by_path = {} }
+    vim.fn.setqflist({
+      { filename = "/gittrace-nav-a", lnum = 1, text = "a" },
+      { filename = "/gittrace-nav-b", lnum = 1, text = "b" },
+    })
+
+    review.next_file()
+
+    assert.equals(main_win, vim.api.nvim_get_current_win())
+  end)
+
+  it("notifies at the last file instead of wrapping", function()
+    review._session = { main_win = nil, files = {}, files_by_path = {} }
+    vim.fn.setqflist({ { filename = "/gittrace-nav-only", lnum = 1, text = "x" } })
+    vim.cmd("silent! clast")
+
+    review.next_file()
+
+    assert.is_not_nil(matched("last file"))
+  end)
+
+  it("notifies at the first file instead of wrapping", function()
+    review._session = { main_win = nil, files = {}, files_by_path = {} }
+    vim.fn.setqflist({ { filename = "/gittrace-nav-only", lnum = 1, text = "x" } })
+    vim.cmd("silent! cfirst")
+
+    review.prev_file()
+
+    assert.is_not_nil(matched("first file"))
   end)
 end)

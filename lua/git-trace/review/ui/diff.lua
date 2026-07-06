@@ -1,5 +1,6 @@
 local review_git = require("git-trace.review.git")
 local review_signs = require("git-trace.review.ui.signs")
+local config = require("git-trace.config")
 
 local M = {}
 
@@ -11,6 +12,41 @@ local SAVED_WINOPTS = { "wrap", "foldmethod", "foldcolumn", "foldenable", "scrol
 ---@param level integer
 local function notify(msg, level)
   vim.notify("[git-trace] " .. msg, level)
+end
+
+---Attach the configured review keymaps to a review buffer, buffer-local and
+---idempotent. No-op when `review.keymaps` is `false`; each key is skipped
+---individually when it is not a string (nil/false disables just that one). The
+---review module is required lazily to avoid a load-time require cycle
+---(review/init.lua requires this module).
+---@param buf integer buffer handle
+local function set_keymaps(buf)
+  local keymaps = config.values.review.keymaps
+  if keymaps == false then
+    return
+  end
+  if vim.b[buf].git_trace_keymaps_set then
+    return
+  end
+
+  local review = require("git-trace.review")
+  local actions = {
+    { key = "toggle_diff", fn = review.toggle_diff, desc = "git-trace: toggle diff view" },
+    { key = "next_file", fn = review.next_file, desc = "git-trace: next file" },
+    { key = "prev_file", fn = review.prev_file, desc = "git-trace: previous file" },
+    { key = "next_hunk", fn = review.next_hunk, desc = "git-trace: next hunk" },
+    { key = "prev_hunk", fn = review.prev_hunk, desc = "git-trace: previous hunk" },
+    { key = "close", fn = review.close, desc = "git-trace: close review" },
+  }
+
+  for _, action in ipairs(actions) do
+    local lhs = keymaps[action.key]
+    if type(lhs) == "string" then
+      vim.keymap.set("n", lhs, action.fn, { buffer = buf, silent = true, desc = action.desc })
+    end
+  end
+
+  vim.b[buf].git_trace_keymaps_set = true
 end
 
 ---Absolute worktree path of a file (the quickfix filename / files_by_path key).
@@ -95,6 +131,7 @@ local function create_base_buf(session, file, ref_buf, lines)
   pcall(vim.api.nvim_buf_set_name, base_buf, name)
 
   vim.bo[base_buf].modifiable = false
+  set_keymaps(base_buf)
   return base_buf
 end
 
@@ -302,6 +339,13 @@ function M.attach(session, file, win)
   -- (:cnext). Tear it down before setting up the new file.
   close_diff(session)
   vim.w[win].git_trace_attached = nil
+
+  -- Wire keymaps onto the worktree file buffer for every kind except deleted
+  -- files, whose placeholder is wiped and replaced by a base scratch that gets
+  -- its keymaps from create_base_buf.
+  if file.status ~= "D" then
+    set_keymaps(vim.api.nvim_win_get_buf(win))
+  end
 
   if file.binary then
     notify("binary file: " .. file.path, vim.log.levels.INFO)

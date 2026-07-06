@@ -1,5 +1,6 @@
 local ui_diff = require("git-trace.review.ui.diff")
 local review_git = require("git-trace.review.git")
+local config = require("git-trace.config")
 
 describe("review.ui.diff", function()
   local WT = "/gittrace-test-wt"
@@ -47,10 +48,31 @@ describe("review.ui.diff", function()
     return nil
   end
 
+  ---Buffer-local normal-mode keymaps set by git-trace (matched by their desc).
+  local function git_trace_maps(buf)
+    local out = {}
+    for _, m in ipairs(vim.api.nvim_buf_get_keymap(buf, "n")) do
+      if type(m.desc) == "string" and m.desc:match("^git%-trace:") then
+        table.insert(out, m)
+      end
+    end
+    return out
+  end
+
+  local function has_map(buf, lhs)
+    for _, m in ipairs(vim.api.nvim_buf_get_keymap(buf, "n")) do
+      if m.lhs == lhs then
+        return true
+      end
+    end
+    return false
+  end
+
   before_each(function()
     orig.show_file = review_git.show_file
     orig.diff_hunks = review_git.diff_hunks
     orig.notify = vim.notify
+    orig.keymaps = config.values.review.keymaps
     notifications = {}
     vim.notify = function(msg, level)
       table.insert(notifications, { msg = msg, level = level })
@@ -66,6 +88,7 @@ describe("review.ui.diff", function()
     review_git.show_file = orig.show_file
     review_git.diff_hunks = orig.diff_hunks
     vim.notify = orig.notify
+    config.values.review.keymaps = orig.keymaps
     pcall(vim.cmd, "silent! only")
     pcall(vim.cmd, "silent! diffoff!")
     pcall(vim.cmd, "silent! %bwipeout!")
@@ -298,5 +321,78 @@ describe("review.ui.diff", function()
     assert.is_false(vim.wo[win].diff)
     assert.is_nil(session.base_win)
     assert.is_nil(vim.w[win].git_trace_attached)
+  end)
+
+  it("wires the review keymaps onto the worktree buffer and base scratch", function()
+    local session = make_session({ { path = "a.lua", status = "M", binary = false } })
+    local file = session.files[1]
+    review_git.show_file = function(_, _, _, cb)
+      cb({ "base1" }, nil)
+    end
+    local win, buf = open_file("a.lua", { "head1" })
+
+    ui_diff.attach(session, file, win)
+
+    assert.equals(6, #git_trace_maps(buf))
+    assert.is_true(has_map(buf, "]f"))
+    assert.is_true(has_map(buf, "[f"))
+    assert.is_true(has_map(buf, "]c"))
+    assert.is_true(has_map(buf, "[c"))
+
+    assert.is_not_nil(session.base_buf)
+    assert.equals(6, #git_trace_maps(session.base_buf))
+  end)
+
+  it("wires the review keymaps onto a deleted-file base buffer", function()
+    local session = make_session({ { path = "gone.lua", status = "D", binary = false } })
+    local file = session.files[1]
+    review_git.show_file = function(_, _, _, cb)
+      cb({ "old1" }, nil)
+    end
+    local win = open_file("gone.lua", {})
+
+    ui_diff.attach(session, file, win)
+
+    local buf = vim.api.nvim_win_get_buf(win)
+    assert.equals(6, #git_trace_maps(buf))
+  end)
+
+  it("wires no keymaps when review.keymaps is false", function()
+    config.values.review.keymaps = false
+    local session = make_session({ { path = "a.lua", status = "M", binary = false } })
+    local file = session.files[1]
+    review_git.show_file = function(_, _, _, cb)
+      cb({ "base1" }, nil)
+    end
+    local win, buf = open_file("a.lua", { "head1" })
+
+    ui_diff.attach(session, file, win)
+
+    assert.equals(0, #git_trace_maps(buf))
+    assert.equals(0, #git_trace_maps(session.base_buf))
+  end)
+
+  it("skips individually disabled keys", function()
+    config.values.review.keymaps = {
+      toggle_diff = "<leader>rd",
+      next_file = "]f",
+      prev_file = "[f",
+      next_hunk = false,
+      prev_hunk = "[c",
+      close = "<leader>rq",
+    }
+    local session = make_session({ { path = "a.lua", status = "M", binary = false } })
+    local file = session.files[1]
+    review_git.show_file = function(_, _, _, cb)
+      cb({ "base1" }, nil)
+    end
+    local win, buf = open_file("a.lua", { "head1" })
+
+    ui_diff.attach(session, file, win)
+
+    assert.equals(5, #git_trace_maps(buf))
+    assert.is_false(has_map(buf, "]c"))
+    assert.is_true(has_map(buf, "[c"))
+    assert.is_true(has_map(buf, "]f"))
   end)
 end)
