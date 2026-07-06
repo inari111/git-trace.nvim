@@ -168,6 +168,42 @@ describe("review.ui.diff", function()
     assert.is_true(vim.wo[win].diff)
   end)
 
+  it("redirects a toggle from the base scratch window to the main file", function()
+    local session = make_session({ { path = "a.lua", status = "M", binary = false } })
+    local file = session.files[1]
+    review_git.show_file = function(_, _, _, cb)
+      cb({ "base1" }, nil)
+    end
+    local win = open_file("a.lua", { "head1" })
+
+    ui_diff.attach(session, file, win)
+    assert.is_true(session.diff_enabled)
+    assert.equals(2, win_count())
+
+    -- Focus the base scratch window and toggle from there. The scratch buffer is
+    -- not in files_by_path, so this used to flip diff_enabled without tearing the
+    -- layout down (state desync). It must instead act on the main worktree file.
+    vim.api.nvim_set_current_win(session.base_win)
+    ui_diff.toggle(session)
+
+    assert.is_false(session.diff_enabled)
+    assert.equals(1, win_count())
+    assert.is_false(vim.wo[win].diff)
+  end)
+
+  it("refuses to toggle from a buffer outside the review without changing state", function()
+    local session = make_session({ { path = "a.lua", status = "M", binary = false } })
+    -- An unnamed scratch buffer that is not part of any review.
+    local other = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_win_set_buf(vim.api.nvim_get_current_win(), other)
+
+    ui_diff.toggle(session)
+
+    assert.is_true(session.diff_enabled) -- unchanged
+    assert.equals(1, win_count())
+    assert.is_not_nil(notified_matching("not part of the active review"))
+  end)
+
   it("warns and keeps the mode when toggling on a binary file", function()
     local session = make_session({ { path = "img.png", status = "M", binary = true } })
     local file = session.files[1]
@@ -296,6 +332,33 @@ describe("review.ui.diff", function()
     vim.api.nvim_win_close(win, true)
     assert.equals(1, win_count())
 
+    assert.has_no.errors(function()
+      pending({ "base1" }, nil)
+    end)
+    assert.equals(1, win_count())
+    assert.is_nil(session.base_win)
+  end)
+
+  it("drops a stale base fetch after toggling back to single view", function()
+    local session = make_session({ { path = "a.lua", status = "M", binary = false } })
+    local file = session.files[1]
+    local pending
+    review_git.show_file = function(_, _, _, cb)
+      pending = cb
+    end
+    local win = open_file("a.lua", { "head1" })
+
+    -- attach starts show_diff (diff_enabled defaults true); hold the base fetch.
+    ui_diff.attach(session, file, win)
+    assert.is_not_nil(pending)
+    assert.equals(1, win_count()) -- diff not built yet, waiting on the base
+
+    -- User toggles to single view while the base fetch is still in flight.
+    ui_diff.toggle(session)
+    assert.is_false(session.diff_enabled)
+    assert.equals(1, win_count())
+
+    -- The late base fetch must not resurrect the diff layout.
     assert.has_no.errors(function()
       pending({ "base1" }, nil)
     end)

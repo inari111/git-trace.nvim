@@ -90,6 +90,10 @@ end
 ---main window and restore its saved options. Clears the recorded handles.
 ---@param session GitTraceReviewSession
 local function close_diff(session)
+  -- Invalidate any base-fetch callback still in flight (see M.show_diff) so it
+  -- cannot rebuild the diff layout after we have just torn it down.
+  session.diff_request_id = (session.diff_request_id or 0) + 1
+
   if session.base_win and vim.api.nvim_win_is_valid(session.base_win) then
     pcall(vim.api.nvim_win_close, session.base_win, true)
   end
@@ -226,8 +230,16 @@ end
 ---@param win integer window handle currently displaying the worktree file
 function M.show_diff(session, file, win)
   local expected = abs_path(session, file)
+  -- Stamp this request so a base fetch that resolves after the user has toggled
+  -- back to single view (or the session was torn down) is dropped instead of
+  -- rebuilding the diff. close_diff bumps the same counter.
+  session.diff_request_id = (session.diff_request_id or 0) + 1
+  local request_id = session.diff_request_id
 
   with_base_lines(session, file, function(lines)
+    if request_id ~= session.diff_request_id or not session.diff_enabled then
+      return
+    end
     if not win_still_shows(win, expected) then
       return
     end
@@ -370,6 +382,16 @@ end
 function M.toggle(session)
   local win = vim.api.nvim_get_current_win()
   local buf = vim.api.nvim_win_get_buf(win)
+
+  -- When focus is on the base scratch window of an active diff, act on the
+  -- worktree file in the main window instead. That scratch buffer's gittrace://
+  -- name is not in files_by_path, so without this redirect we would treat it as
+  -- "not part of the review" and refuse.
+  if session.main_win and buf == session.base_buf and vim.api.nvim_win_is_valid(session.main_win) then
+    win = session.main_win
+    buf = vim.api.nvim_win_get_buf(win)
+  end
+
   local file = session.files_by_path[vim.api.nvim_buf_get_name(buf)]
 
   -- Deleted files are shown through a base scratch buffer whose gittrace://
@@ -379,11 +401,15 @@ function M.toggle(session)
     return
   end
 
-  session.diff_enabled = not session.diff_enabled
-
+  -- The current buffer is not a review file (e.g. a stray split). Flipping
+  -- diff_enabled here would desync the session state from the on-screen layout,
+  -- so refuse without touching it.
   if not file then
+    notify("current buffer is not part of the active review", vim.log.levels.WARN)
     return
   end
+
+  session.diff_enabled = not session.diff_enabled
 
   if session.diff_enabled then
     M.show_diff(session, file, win)
