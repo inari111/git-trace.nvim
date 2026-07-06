@@ -250,7 +250,24 @@ function M.open(number)
   end
 end
 
----Close the current review session. Idempotent; leaves the worktree in place.
+---Wipe every listed buffer that lives under `worktree_path`, so switching PRs
+---(open() closes the previous session first) does not leave the previous
+---worktree's file buffers -- and their buffer-local keymaps that still call into
+---the live review -- accumulating in the buffer list. Guarded per buffer since a
+---buffer may be unloadable (e.g. modified without `bufhidden=wipe`).
+---@param worktree_path string absolute path to the session's worktree
+local function wipe_worktree_buffers(worktree_path)
+  local prefix = worktree_path .. "/"
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    local name = vim.api.nvim_buf_get_name(buf)
+    if name ~= "" and vim.startswith(name, prefix) then
+      pcall(vim.api.nvim_buf_delete, buf, { force = true })
+    end
+  end
+end
+
+---Close the current review session. Idempotent; leaves the worktree on disk for
+---reuse but wipes its file buffers so switching PRs does not orphan them.
 ---Refuses (and warns) while an open is in-flight so a slow open is never
 ---silently discarded.
 function M.close()
@@ -262,9 +279,11 @@ function M.close()
     return
   end
 
-  ui_diff.teardown(M._session)
-  pcall(vim.api.nvim_del_augroup_by_id, M._session.augroup)
+  local session = M._session
+  ui_diff.teardown(session)
+  pcall(vim.api.nvim_del_augroup_by_id, session.augroup)
   qflist.clear()
+  wipe_worktree_buffers(session.worktree)
   M._session = nil
 end
 

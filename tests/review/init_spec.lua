@@ -346,6 +346,66 @@ describe("review.open", function()
   end)
 end)
 
+describe("review.close buffer cleanup", function()
+  local WT = "/gittrace-close-wipe-wt"
+  local orig_notify
+
+  before_each(function()
+    orig_notify = vim.notify
+    vim.notify = function() end
+  end)
+
+  after_each(function()
+    vim.notify = orig_notify
+    review._session = nil
+    review._opening = false
+    pcall(vim.cmd, "silent! %bwipeout!")
+  end)
+
+  it("wipes worktree file buffers on close but leaves unrelated buffers", function()
+    review._session = {
+      worktree = WT,
+      augroup = vim.api.nvim_create_augroup("GitTraceReviewCloseWipeTest", { clear = true }),
+      files = {},
+      files_by_path = {},
+    }
+
+    local wt_buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(wt_buf, WT .. "/src/a.lua")
+    local nested_buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(nested_buf, WT .. "/deep/nested/b.lua")
+    local other_buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(other_buf, "/elsewhere/c.lua")
+
+    review.close()
+
+    assert.is_false(vim.api.nvim_buf_is_valid(wt_buf))
+    assert.is_false(vim.api.nvim_buf_is_valid(nested_buf))
+    assert.is_true(vim.api.nvim_buf_is_valid(other_buf))
+
+    pcall(vim.api.nvim_buf_delete, other_buf, { force = true })
+  end)
+
+  it("does not wipe a buffer whose name merely shares the worktree prefix string", function()
+    review._session = {
+      worktree = WT,
+      augroup = vim.api.nvim_create_augroup("GitTraceReviewCloseWipeTest2", { clear = true }),
+      files = {},
+      files_by_path = {},
+    }
+
+    -- Sibling path that starts with the worktree name but is not inside it.
+    local sibling_buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(sibling_buf, WT .. "-other/d.lua")
+
+    review.close()
+
+    assert.is_true(vim.api.nvim_buf_is_valid(sibling_buf))
+
+    pcall(vim.api.nvim_buf_delete, sibling_buf, { force = true })
+  end)
+end)
+
 describe("review.next_hunk / review.prev_hunk", function()
   local WT = "/gittrace-hunkjump-test-wt"
   local orig = {}
