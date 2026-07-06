@@ -101,6 +101,14 @@ function M.validate()
     review.worktree_dir = defaults.review.worktree_dir
   end
 
+  if type(review.open_qf) ~= "boolean" then
+    vim.notify(
+      "[git-trace] Invalid review.open_qf. Must be boolean",
+      vim.log.levels.ERROR
+    )
+    review.open_qf = defaults.review.open_qf
+  end
+
   if review.keymaps ~= false and type(review.keymaps) ~= "table" then
     vim.notify(
       "[git-trace] Invalid review.keymaps. Must be a table or false",

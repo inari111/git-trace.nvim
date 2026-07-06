@@ -56,6 +56,14 @@ describe("config", function()
       assert.equals(30, c.review.pr_list_limit)
     end)
 
+    it("resets a non-boolean review.open_qf to default", function()
+      local orig_notify = vim.notify
+      vim.notify = function() end
+      local c = config.apply({ review = { open_qf = "false" } })
+      vim.notify = orig_notify
+      assert.is_true(c.review.open_qf)
+    end)
+
     it("resets a non-table review to defaults without crashing", function()
       local orig_notify = vim.notify
       vim.notify = function() end
