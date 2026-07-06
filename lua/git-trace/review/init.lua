@@ -313,14 +313,29 @@ local function jump_hunk(diff_key, sign_jump)
   local buf = vim.api.nvim_win_get_buf(win)
   local file = session.files_by_path[vim.api.nvim_buf_get_name(buf)]
 
+  -- A deleted file is shown through a read-only base scratch (no worktree file
+  -- in files_by_path, no diff, no signs) but is still part of the review, so it
+  -- must not draw the "not part of the review" warning. There is nothing to
+  -- navigate, so report that instead.
+  if vim.b[buf].git_trace_deleted ~= nil then
+    notify("No diff to navigate for this file", vim.log.levels.INFO)
+    return
+  end
+
   if session.diff_enabled then
     -- The built-in diff jump only makes sense on the diff's own windows (the
     -- worktree file or its base scratch); elsewhere warn like single view does.
-    if file or buf == session.base_buf then
-      pcall(vim.cmd, "normal! " .. diff_key)
-    else
+    if not (file or buf == session.base_buf) then
       notify("Current buffer is not part of the active review", vim.log.levels.WARN)
+      return
     end
+    -- Binary files have no navigable diff; the built-in `]c`/`[c` would raise
+    -- E99 (buffer not in diff mode), which pcall would swallow in silence.
+    if file and file.binary then
+      notify("No diff to navigate for this file", vim.log.levels.INFO)
+      return
+    end
+    pcall(vim.cmd, "normal! " .. diff_key)
     return
   end
 

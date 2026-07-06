@@ -498,6 +498,34 @@ describe("review.next_hunk / review.prev_hunk", function()
     assert.matches("not part of the active review", notifications[1].msg)
   end)
 
+  it("reports no diff to navigate on a deleted-file base view without a false warning", function()
+    review._session = make_session({ { path = "gone.lua", status = "D", binary = false } }, true)
+    -- The deleted-file base scratch has a gittrace:// name (absent from
+    -- files_by_path) and a buffer-local marker; it is still part of the review.
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_name(buf, "gittrace://pr3/cafef00d/gone.lua")
+    vim.b[buf].git_trace_deleted = "gone.lua"
+    win = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_set_buf(win, buf)
+
+    review.next_hunk()
+
+    assert.equals(1, #notifications)
+    assert.equals(vim.log.levels.INFO, notifications[1].level)
+    assert.matches("[Nn]o diff to navigate", notifications[1].msg)
+  end)
+
+  it("reports no diff to navigate on a binary file in diff view", function()
+    review._session = make_session({ { path = "img.png", status = "M", binary = true } }, true)
+    open_file("img.png", { "binary-bytes" })
+
+    review.prev_hunk()
+
+    assert.equals(1, #notifications)
+    assert.equals(vim.log.levels.INFO, notifications[1].level)
+    assert.matches("[Nn]o diff to navigate", notifications[1].msg)
+  end)
+
   it("moves the cursor to the next hunk in single-file view", function()
     review._session = make_session({ { path = "a.lua", status = "M", binary = false } })
     review_git.diff_hunks = function(_, _, _, _, cb)
