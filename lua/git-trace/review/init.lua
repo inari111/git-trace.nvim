@@ -197,7 +197,13 @@ function M.open(number)
       vim.ui.select(prs, {
         prompt = "Select a PR to review:",
         format_item = function(pr)
-          return ("#%d %s (%s)"):format(pr.number, pr.title, pr.author.login)
+          -- GitHub returns a null author for deleted accounts, which decodes to
+          -- vim.NIL; guard so format_item never throws and leaks M._opening.
+          local author = "?"
+          if type(pr.author) == "table" and type(pr.author.login) == "string" then
+            author = pr.author.login
+          end
+          return ("#%d %s (%s)"):format(pr.number, pr.title, author)
         end,
       }, function(selected)
         if not selected then
@@ -209,28 +215,36 @@ function M.open(number)
     end)
   end
 
-  local start_dir = current_start_dir()
-  git.repo_root(start_dir, function(root, root_err)
-    if root_err or not root then
-      fail(root_err or "Not a git repository")
-      return
-    end
-    ctx.root = root
-
-    git.remote_url(start_dir, function(remote_url, remote_err)
-      if remote_err or not remote_url then
-        fail(remote_err or "No remote found")
+  -- Defense in depth: any synchronous throw before the first async hop would
+  -- otherwise leave M._opening stuck true. (Async callback errors still report
+  -- through their own fail() handlers.)
+  local ok, err = pcall(function()
+    local start_dir = current_start_dir()
+    git.repo_root(start_dir, function(root, root_err)
+      if root_err or not root then
+        fail(root_err or "Not a git repository")
         return
       end
-      ctx.remote_url = remote_url
+      ctx.root = root
 
-      if ctx.number == nil then
-        select_pr()
-      else
-        fetch_pr_view(ctx.number)
-      end
+      git.remote_url(start_dir, function(remote_url, remote_err)
+        if remote_err or not remote_url then
+          fail(remote_err or "No remote found")
+          return
+        end
+        ctx.remote_url = remote_url
+
+        if ctx.number == nil then
+          select_pr()
+        else
+          fetch_pr_view(ctx.number)
+        end
+      end)
     end)
   end)
+  if not ok then
+    fail("Unexpected error while opening review: " .. tostring(err))
+  end
 end
 
 ---Close the current review session. Idempotent; leaves the worktree in place.

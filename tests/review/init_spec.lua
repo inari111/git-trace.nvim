@@ -23,6 +23,9 @@ describe("review.open", function()
     orig.buf_get_name = vim.api.nvim_buf_get_name
     orig.getcwd = vim.fn.getcwd
     orig.open_qf = config.values.review.open_qf
+    orig.ui_select = vim.ui.select
+    orig.confirm = vim.fn.confirm
+    orig.worktree_clean = worktree.clean
 
     notifications = {}
     qf_calls = {}
@@ -73,6 +76,9 @@ describe("review.open", function()
     vim.api.nvim_buf_get_name = orig.buf_get_name
     vim.fn.getcwd = orig.getcwd
     config.values.review.open_qf = orig.open_qf
+    vim.ui.select = orig.ui_select
+    vim.fn.confirm = orig.confirm
+    worktree.clean = orig.worktree_clean
 
     review.close()
     review._opening = false
@@ -162,6 +168,132 @@ describe("review.open", function()
 
     assert.equals(1, root_calls)
     assert.is_true(has_level(vim.log.levels.WARN))
+  end)
+
+  it("aborts and resets when the remote URL cannot be resolved", function()
+    git.remote_url = function(_, cb)
+      cb(nil, "no remote")
+    end
+
+    review.open(42)
+
+    assert.is_nil(review._get_session())
+    assert.equals(0, #qf_calls)
+    assert.is_true(has_level(vim.log.levels.ERROR))
+    assert.is_false(review._opening)
+  end)
+
+  it("warns but continues when the PR is not open", function()
+    github.pr_view = function(_, _, cb)
+      cb({ number = 42, title = "Fix", state = "MERGED", base_ref = "main", url = "u", head_oid = "h" }, nil)
+    end
+
+    review.open(42)
+
+    assert.is_not_nil(review._get_session())
+    assert.is_true(has_level(vim.log.levels.WARN))
+    assert.is_false(review._opening)
+  end)
+
+  it("prompts to select a PR when opened with nil and continues on selection", function()
+    github.list_open_prs = function(_, cb)
+      cb({ { number = 7, title = "T", author = { login = "octocat" } } }, nil)
+    end
+    vim.ui.select = function(items, _, on_choice)
+      on_choice(items[1])
+    end
+
+    review.open(nil)
+
+    assert.is_not_nil(review._get_session())
+    assert.is_false(review._opening)
+  end)
+
+  it("resets the opening flag when PR selection is cancelled", function()
+    github.list_open_prs = function(_, cb)
+      cb({ { number = 7, title = "T", author = { login = "octocat" } } }, nil)
+    end
+    vim.ui.select = function(_, _, on_choice)
+      on_choice(nil)
+    end
+
+    review.open(nil)
+
+    assert.is_nil(review._get_session())
+    assert.is_false(review._opening)
+  end)
+
+  it("notifies and resets when there are no open PRs", function()
+    github.list_open_prs = function(_, cb)
+      cb({}, nil)
+    end
+
+    review.open(nil)
+
+    assert.is_nil(review._get_session())
+    assert.is_true(has_level(vim.log.levels.INFO))
+    assert.is_false(review._opening)
+  end)
+
+  it("aborts and resets when listing open PRs fails", function()
+    github.list_open_prs = function(_, cb)
+      cb(nil, "list failed")
+    end
+
+    review.open(nil)
+
+    assert.is_nil(review._get_session())
+    assert.is_true(has_level(vim.log.levels.ERROR))
+    assert.is_false(review._opening)
+  end)
+
+  it("does not error formatting a PR whose author is null", function()
+    github.list_open_prs = function(_, cb)
+      cb({ { number = 7, title = "Ghost", author = vim.NIL } }, nil)
+    end
+    local formatted
+    vim.ui.select = function(items, opts, on_choice)
+      assert.has_no.errors(function()
+        formatted = opts.format_item(items[1])
+      end)
+      on_choice(nil)
+    end
+
+    review.open(nil)
+
+    assert.is_string(formatted)
+    assert.is_false(review._opening)
+  end)
+
+  it("does nothing when the clean confirmation is declined", function()
+    vim.fn.confirm = function()
+      return 2
+    end
+    local cleaned = false
+    worktree.clean = function()
+      cleaned = true
+    end
+
+    review.clean()
+
+    assert.is_false(cleaned)
+  end)
+
+  it("removes worktrees when the clean confirmation is accepted", function()
+    vim.fn.confirm = function()
+      return 1
+    end
+    local cleaned = false
+    worktree.clean = function(root, cb)
+      cleaned = true
+      assert.equals("/repo", root)
+      cb(2, nil)
+    end
+
+    review.clean()
+
+    assert.is_true(cleaned)
+    assert.is_true(has_level(vim.log.levels.INFO))
   end)
 end)
 
