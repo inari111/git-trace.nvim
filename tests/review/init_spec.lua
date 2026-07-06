@@ -295,6 +295,55 @@ describe("review.open", function()
     assert.is_true(cleaned)
     assert.is_true(has_level(vim.log.levels.INFO))
   end)
+
+  it("refuses to clean while a review is being opened", function()
+    -- Stall the open at the worktree stage so it stays in-flight (no session yet).
+    local resume
+    worktree.ensure = function(_, _, _, _, cb)
+      resume = cb
+    end
+    vim.fn.confirm = function()
+      return 1
+    end
+    local cleaned = false
+    worktree.clean = function(_, cb)
+      cleaned = true
+      cb(0, nil)
+    end
+
+    review.open(42)
+    assert.is_true(review._opening)
+    assert.is_nil(review._get_session())
+
+    review.clean()
+
+    -- clean must not destroy the worktree the in-flight open is preparing.
+    assert.is_false(cleaned)
+    assert.is_true(has_level(vim.log.levels.WARN))
+
+    -- Let the open finish so after_each tears down cleanly.
+    resume("/wt", nil)
+    assert.is_not_nil(review._get_session())
+  end)
+
+  it("refuses to close while a review is being opened", function()
+    local resume
+    worktree.ensure = function(_, _, _, _, cb)
+      resume = cb
+    end
+
+    review.open(42)
+    assert.is_true(review._opening)
+
+    review.close()
+
+    -- The in-flight open is not silently torn down; the user is warned instead.
+    assert.is_true(review._opening)
+    assert.is_true(has_level(vim.log.levels.WARN))
+
+    resume("/wt", nil)
+    assert.is_not_nil(review._get_session())
+  end)
 end)
 
 describe("review.next_hunk / review.prev_hunk", function()

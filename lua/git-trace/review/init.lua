@@ -59,11 +59,14 @@ function M.open(number)
     notify("A review is already being opened", vim.log.levels.WARN)
     return
   end
-  M._opening = true
 
+  -- Close any previous session (wiping its worktree buffers) before marking the
+  -- open in-flight, so close() is not itself refused by the in-flight guard.
   if M._session then
     M.close()
   end
+
+  M._opening = true
 
   local ctx = { number = number }
 
@@ -248,7 +251,13 @@ function M.open(number)
 end
 
 ---Close the current review session. Idempotent; leaves the worktree in place.
+---Refuses (and warns) while an open is in-flight so a slow open is never
+---silently discarded.
 function M.close()
+  if M._opening then
+    notify("A review is being opened, please try again", vim.log.levels.WARN)
+    return
+  end
   if not M._session then
     return
   end
@@ -358,6 +367,13 @@ end
 
 ---Remove every git-trace review worktree after confirmation.
 function M.clean()
+  -- Refuse while an open is in-flight: its session is not built yet, so cleaning
+  -- would remove the very worktree/refs the open is fetching into.
+  if M._opening then
+    notify("A review is being opened, please try again", vim.log.levels.WARN)
+    return
+  end
+
   if vim.fn.confirm("Remove all git-trace review worktrees?", "&Yes\n&No", 2) ~= 1 then
     return
   end
