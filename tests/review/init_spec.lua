@@ -2,6 +2,7 @@ local review = require("git-trace.review")
 local git = require("git-trace.git")
 local github = require("git-trace.provider.github")
 local review_git = require("git-trace.review.git")
+local ui_diff = require("git-trace.review.ui.diff")
 local worktree = require("git-trace.review.worktree")
 local config = require("git-trace.config")
 
@@ -683,4 +684,84 @@ describe("review.next_file / review.prev_file", function()
 
     assert.is_not_nil(matched("first file"))
   end)
+
+  it(
+    "tears down the active diff before :cnext so the next file is not diffed while its window is still in diff mode",
+    function()
+      -- Loading a file into a window that is still in diff mode drags it into a
+      -- transient diff against the old base and corrupts the new buffer's diff
+      -- state (whole buffer shows as changed, hiding syntax). next_file must tear
+      -- the diff down first, so by the time :cnext loads the next file the old
+      -- base window is already gone.
+      local wt = vim.fn.tempname()
+      vim.fn.mkdir(wt, "p")
+      wt = vim.uv.fs_realpath(wt)
+      vim.fn.writefile({ "shared", "old-a" }, wt .. "/a.lua")
+      vim.fn.writefile({ "shared", "old-b" }, wt .. "/b.lua")
+
+      local files = {
+        { path = "a.lua", status = "M", binary = false },
+        { path = "b.lua", status = "M", binary = false },
+      }
+      local files_by_path = {}
+      for _, f in ipairs(files) do
+        files_by_path[wt .. "/" .. f.path] = f
+      end
+      local session = {
+        pr = { number = 9 },
+        repo_root = wt,
+        worktree = wt,
+        merge_base = "deadbeefdeadbeef",
+        files = files,
+        files_by_path = files_by_path,
+        diff_enabled = true,
+      }
+      review._session = session
+
+      local orig_show = review_git.show_file
+      review_git.show_file = function(_, _, _, cb)
+        cb({ "shared" }, nil)
+      end
+
+      -- Open a.lua and build its diff, exactly as a review file open would.
+      local a_buf = vim.api.nvim_create_buf(true, false)
+      vim.api.nvim_buf_set_name(a_buf, wt .. "/a.lua")
+      vim.api.nvim_buf_set_lines(a_buf, 0, -1, false, { "shared", "old-a" })
+      local win = vim.api.nvim_get_current_win()
+      vim.api.nvim_win_set_buf(win, a_buf)
+      ui_diff.attach(session, files[1], win)
+
+      local base_win = session.base_win
+      assert.is_not_nil(base_win)
+      assert.is_true(vim.api.nvim_win_is_valid(base_win))
+
+      -- Record whether the base window is still open at the moment b.lua lands in
+      -- a window (i.e. when :cnext reuses the main window). If teardown ran first
+      -- it must already be closed.
+      local base_open_when_b_loaded
+      local group = vim.api.nvim_create_augroup("git_trace_nav_regression", { clear = true })
+      vim.api.nvim_create_autocmd("BufWinEnter", {
+        group = group,
+        callback = function(args)
+          if vim.api.nvim_buf_get_name(args.buf) == wt .. "/b.lua" then
+            base_open_when_b_loaded = vim.api.nvim_win_is_valid(base_win)
+          end
+        end,
+      })
+
+      vim.fn.setqflist({
+        { filename = wt .. "/a.lua", lnum = 1, text = "a" },
+        { filename = wt .. "/b.lua", lnum = 1, text = "b" },
+      })
+      vim.cmd("silent! cfirst")
+
+      review.next_file()
+
+      review_git.show_file = orig_show
+      pcall(vim.api.nvim_del_augroup_by_id, group)
+
+      assert.is_false(base_open_when_b_loaded)
+      assert.is_false(vim.api.nvim_win_is_valid(base_win))
+    end
+  )
 end)

@@ -385,6 +385,18 @@ local function jump_file(cmd, edge)
   end
 
   local main_win = M._session.main_win
+
+  -- Tear down the active diff BEFORE the quickfix jump. :cnext reuses the main
+  -- window, and loading a file into a window that is still in diff mode drags
+  -- the new buffer into a transient diff against the old base, which leaves its
+  -- diff state corrupted: the whole buffer renders as changed (hiding syntax
+  -- highlighting under the Diff* colors) and :diffupdate does not clear it. The
+  -- next file's BufWinEnter -> attach rebuilds the diff cleanly on a plain
+  -- window. Only needed in diff view; single view has no diff to corrupt.
+  if M._session.diff_enabled then
+    ui_diff.teardown(M._session)
+  end
+
   if main_win and vim.api.nvim_win_is_valid(main_win) then
     vim.api.nvim_set_current_win(main_win)
   end
