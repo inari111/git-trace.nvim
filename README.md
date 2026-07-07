@@ -152,6 +152,7 @@ require("git-trace").setup({
 - **Navigate files with `]f` / `[f`** (or `require("git-trace.review").next_file()` / `prev_file()`). Running the raw `:cnext` from the base (left) diff window opens the next file in the wrong window and breaks the layout; the navigation commands focus the correct window first.
 - **Opening a file closes the quickfix window** so the diff fills the full height (`close_qf_on_open`, default `true`). File navigation still works with `]f` / `[f`; run `:copen` to bring the file list back.
 - **Opening a file also closes any dashboard window** (snacks.nvim, dashboard-nvim, alpha-nvim, mini.starter, vim-startify). When `:GitTraceReview` is run from a start screen, quickfix opens the file in a small split beside it; the dashboard is closed so the diff fills the screen.
+- **The diff shows the whole file**, not just the changed hunks: native diff mode folds unchanged regions away, so git-trace disables fold-closing in both diff panes. Your original `foldenable` is restored when the diff view closes.
 - **LSP runs as a separate instance** rooted at the worktree directory. Language ecosystems that need installed dependencies (e.g. `node_modules`) will not be fully functional unless those dependencies are present in the worktree.
 
 ## Configuration

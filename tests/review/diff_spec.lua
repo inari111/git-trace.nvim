@@ -149,6 +149,10 @@ describe("review.ui.diff", function()
 
     assert.is_true(vim.wo[session.base_win].diff)
     assert.is_true(vim.wo[session.main_win].diff)
+    -- Diff mode folds unchanged regions; both panes disable fold-closing so the
+    -- whole file stays visible, not just the changed hunks.
+    assert.is_false(vim.wo[session.base_win].foldenable)
+    assert.is_false(vim.wo[session.main_win].foldenable)
     assert.equals(win, vim.api.nvim_get_current_win())
     assert.equals(win, session.main_win)
 

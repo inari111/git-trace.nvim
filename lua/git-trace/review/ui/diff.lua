@@ -324,6 +324,13 @@ function M.show_diff(session, file, win)
       vim.cmd.diffthis()
     end)
 
+    -- Show the whole file, not just the changed hunks: diff mode
+    -- (foldmethod=diff) folds unchanged regions away by default. Disabling
+    -- fold-closing on both panes keeps every line visible. foldenable is in
+    -- SAVED_WINOPTS, so the main window's original value is restored on close.
+    vim.wo[base_win].foldenable = false
+    vim.wo[win].foldenable = false
+
     -- Keep focus on the real worktree file so LSP and edits target it.
     vim.api.nvim_set_current_win(win)
 
