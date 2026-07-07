@@ -132,6 +132,7 @@ require("git-trace").setup({
     worktree_dir = nil,   -- worktree base dir; nil = stdpath("cache").."/git-trace/worktrees"
     pr_list_limit = 30,   -- max PRs listed when selecting with `:GitTraceReview`
     open_qf = true,       -- open the quickfix window automatically
+    close_qf_on_open = true, -- close the quickfix window when a review file opens, so the diff gets full height
     keymaps = {
       toggle_diff = "<leader>rd",
       next_file = "]f",
@@ -149,6 +150,7 @@ require("git-trace").setup({
 - **Worktrees are disposable.** Each PR is checked out with a detached HEAD under `~/.cache/nvim/git-trace/worktrees/` (`vim.fn.stdpath("cache")`). Reopening a PR runs `git checkout --force`, so any edits you make inside a review worktree are discarded — treat it as read-only.
 - **`:GitTraceReviewClose` keeps the worktree** on disk so reopening the same PR is fast. Run `:GitTraceReviewClean` when you want to reclaim the disk space.
 - **Navigate files with `]f` / `[f`** (or `require("git-trace.review").next_file()` / `prev_file()`). Running the raw `:cnext` from the base (left) diff window opens the next file in the wrong window and breaks the layout; the navigation commands focus the correct window first.
+- **Opening a file closes the quickfix window** so the diff fills the full height (`close_qf_on_open`, default `true`). File navigation still works with `]f` / `[f`; run `:copen` to bring the file list back.
 - **LSP runs as a separate instance** rooted at the worktree directory. Language ecosystems that need installed dependencies (e.g. `node_modules`) will not be fully functional unless those dependencies are present in the worktree.
 
 ## Configuration

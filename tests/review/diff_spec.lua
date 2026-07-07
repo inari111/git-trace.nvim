@@ -39,6 +39,26 @@ describe("review.ui.diff", function()
     return #vim.api.nvim_tabpage_list_wins(0)
   end
 
+  ---True if any window in the current tabpage holds a quickfix buffer.
+  local function qf_window_open()
+    for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+      if vim.bo[vim.api.nvim_win_get_buf(w)].buftype == "quickfix" then
+        return true
+      end
+    end
+    return false
+  end
+
+  ---Populate and open the quickfix list, optionally stamping it as git-trace's own.
+  ---@param context table|nil qf context; pass a git_trace_review marker or nil/other for "not mine"
+  local function open_qf(context)
+    vim.fn.setqflist({}, " ", {
+      items = { { filename = WT .. "/a.lua", lnum = 1, text = "M +0 -0  a.lua" } },
+      context = context,
+    })
+    vim.cmd.copen()
+  end
+
   local function notified_matching(pattern)
     for _, n in ipairs(notifications) do
       if type(n.msg) == "string" and n.msg:match(pattern) then
@@ -73,6 +93,7 @@ describe("review.ui.diff", function()
     orig.diff_hunks = review_git.diff_hunks
     orig.notify = vim.notify
     orig.keymaps = config.values.review.keymaps
+    orig.close_qf_on_open = config.values.review.close_qf_on_open
     notifications = {}
     vim.notify = function(msg, level)
       table.insert(notifications, { msg = msg, level = level })
@@ -89,9 +110,12 @@ describe("review.ui.diff", function()
     review_git.diff_hunks = orig.diff_hunks
     vim.notify = orig.notify
     config.values.review.keymaps = orig.keymaps
+    config.values.review.close_qf_on_open = orig.close_qf_on_open
+    pcall(vim.cmd, "silent! cclose")
     pcall(vim.cmd, "silent! only")
     pcall(vim.cmd, "silent! diffoff!")
     pcall(vim.cmd, "silent! %bwipeout!")
+    vim.fn.setqflist({}, "r", { items = {}, context = {}, title = "" })
   end)
 
   it("builds a native diff with a read-only base scratch buffer", function()
@@ -457,5 +481,59 @@ describe("review.ui.diff", function()
     assert.is_false(has_map(buf, "]c"))
     assert.is_true(has_map(buf, "[c"))
     assert.is_true(has_map(buf, "]f"))
+  end)
+
+  it("closes the git-trace quickfix window before building the diff", function()
+    local session = make_session({ { path = "a.lua", status = "M", binary = false } })
+    local file = session.files[1]
+    review_git.show_file = function(_, _, _, cb)
+      cb({ "base1" }, nil)
+    end
+    local win = open_file("a.lua", { "head1" })
+
+    open_qf({ git_trace_review = session.pr.number })
+    assert.is_true(qf_window_open())
+
+    ui_diff.attach(session, file, win)
+
+    assert.is_false(qf_window_open())
+    assert.is_true(vim.api.nvim_win_is_valid(win))
+    assert.is_true(vim.wo[win].diff)
+    assert.equals(win, session.main_win)
+  end)
+
+  it("keeps the quickfix window open when close_qf_on_open is false", function()
+    config.values.review.close_qf_on_open = false
+    local session = make_session({ { path = "a.lua", status = "M", binary = false } })
+    local file = session.files[1]
+    review_git.show_file = function(_, _, _, cb)
+      cb({ "base1" }, nil)
+    end
+    local win = open_file("a.lua", { "head1" })
+
+    open_qf({ git_trace_review = session.pr.number })
+    assert.is_true(qf_window_open())
+
+    ui_diff.attach(session, file, win)
+
+    assert.is_true(qf_window_open())
+    assert.is_true(vim.wo[win].diff)
+  end)
+
+  it("does not close a quickfix window that does not belong to git-trace", function()
+    local session = make_session({ { path = "a.lua", status = "M", binary = false } })
+    local file = session.files[1]
+    review_git.show_file = function(_, _, _, cb)
+      cb({ "base1" }, nil)
+    end
+    local win = open_file("a.lua", { "head1" })
+
+    open_qf(nil)
+    assert.is_true(qf_window_open())
+
+    ui_diff.attach(session, file, win)
+
+    assert.is_true(qf_window_open())
+    assert.is_true(vim.wo[win].diff)
   end)
 end)

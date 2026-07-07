@@ -32,6 +32,7 @@ describe("config", function()
       assert.is_nil(c.review.worktree_dir)
       assert.equals(30, c.review.pr_list_limit)
       assert.is_true(c.review.open_qf)
+      assert.is_true(c.review.close_qf_on_open)
       assert.equals("<leader>rd", c.review.keymaps.toggle_diff)
       assert.equals("]f", c.review.keymaps.next_file)
       assert.equals("[f", c.review.keymaps.prev_file)
@@ -64,6 +65,14 @@ describe("config", function()
       assert.is_true(c.review.open_qf)
     end)
 
+    it("resets a non-boolean review.close_qf_on_open to default", function()
+      local orig_notify = vim.notify
+      vim.notify = function() end
+      local c = config.apply({ review = { close_qf_on_open = "false" } })
+      vim.notify = orig_notify
+      assert.is_true(c.review.close_qf_on_open)
+    end)
+
     it("resets a non-table review to defaults without crashing", function()
       local orig_notify = vim.notify
       vim.notify = function() end
@@ -72,6 +81,7 @@ describe("config", function()
       assert.is_true(ok)
       assert.equals(30, c.review.pr_list_limit)
       assert.is_true(c.review.open_qf)
+      assert.is_true(c.review.close_qf_on_open)
       assert.equals("<leader>rd", c.review.keymaps.toggle_diff)
     end)
 

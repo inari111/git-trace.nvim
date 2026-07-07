@@ -12,6 +12,7 @@ local M = {}
 ---@field worktree_dir string|nil nil resolves to stdpath("cache").."/git-trace/worktrees" at runtime
 ---@field pr_list_limit integer
 ---@field open_qf boolean
+---@field close_qf_on_open boolean close the quickfix window when a review file attaches, so the diff gets full height
 ---@field keymaps GitTraceReviewKeymaps|false false disables all review keymaps
 
 ---@class GitTraceConfig
@@ -27,6 +28,7 @@ local defaults = {
     worktree_dir = nil,
     pr_list_limit = 30,
     open_qf = true,
+    close_qf_on_open = true,
     keymaps = {
       toggle_diff = "<leader>rd",
       next_file = "]f",
@@ -107,6 +109,14 @@ function M.validate()
       vim.log.levels.ERROR
     )
     review.open_qf = defaults.review.open_qf
+  end
+
+  if type(review.close_qf_on_open) ~= "boolean" then
+    vim.notify(
+      "[git-trace] Invalid review.close_qf_on_open. Must be boolean",
+      vim.log.levels.ERROR
+    )
+    review.close_qf_on_open = defaults.review.close_qf_on_open
   end
 
   if review.keymaps ~= false and type(review.keymaps) ~= "table" then

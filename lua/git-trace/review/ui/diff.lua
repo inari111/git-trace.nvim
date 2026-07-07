@@ -49,6 +49,36 @@ local function set_keymaps(buf)
   vim.b[buf].git_trace_keymaps_set = true
 end
 
+---True if the current quickfix list belongs to a git-trace review (carries the
+---`git_trace_review` context marker set by review/ui/qflist.lua). Guards against
+---closing a quickfix window the user opened for something else.
+---@return boolean
+local function qf_is_mine()
+  local qf = vim.fn.getqflist({ context = 0 })
+  return type(qf.context) == "table" and qf.context.git_trace_review ~= nil
+end
+
+---Close the current tabpage's quickfix window, if one is open and it belongs
+---to this review. Called before building a file's layout so the window being
+---attached (and the diff split built from it) gets the full screen height
+---instead of being squeezed above the quickfix window. File navigation keeps
+---working afterwards via ]f/[f (:cnext/:cprev), which do not need the
+---quickfix window visible; :copen brings the list back at any time.
+local function close_qf_window()
+  if not config.values.review.close_qf_on_open then
+    return
+  end
+  if not qf_is_mine() then
+    return
+  end
+  for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    if vim.bo[vim.api.nvim_win_get_buf(w)].buftype == "quickfix" then
+      pcall(vim.cmd.cclose)
+      return
+    end
+  end
+end
+
 ---Absolute worktree path of a file (the quickfix filename / files_by_path key).
 ---@param session GitTraceReviewSession
 ---@param file GitTraceReviewFile
@@ -346,6 +376,10 @@ function M.attach(session, file, win)
   if vim.w[win].git_trace_attached == expected then
     return
   end
+
+  -- Close the git-trace quickfix window (if open) before anything else, so
+  -- `win` expands to full height before the diff/single layout is built on it.
+  close_qf_window()
 
   -- A previous file's base window may linger when quickfix reuses this window
   -- (:cnext). Tear it down before setting up the new file.
