@@ -26,6 +26,7 @@ describe("review.open", function()
     orig.ui_select = vim.ui.select
     orig.confirm = vim.fn.confirm
     orig.worktree_clean = worktree.clean
+    orig.show_file = review_git.show_file
 
     notifications = {}
     qf_calls = {}
@@ -79,11 +80,15 @@ describe("review.open", function()
     vim.ui.select = orig.ui_select
     vim.fn.confirm = orig.confirm
     worktree.clean = orig.worktree_clean
+    review_git.show_file = orig.show_file
 
     review.close()
     review._opening = false
     vim.notify = orig.notify
     vim.fn.setqflist = orig.setqflist
+    pcall(vim.cmd, "silent! only")
+    pcall(vim.cmd, "silent! diffoff!")
+    pcall(vim.cmd, "silent! %bwipeout!")
   end)
 
   local function has_level(level)
@@ -114,6 +119,42 @@ describe("review.open", function()
     assert.equals(42, opts.context.git_trace_review)
     assert.equals(1, #opts.items)
     assert.is_false(review._opening)
+  end)
+
+  it("fires the dashboard's own cleanup autocmds when closing it on file open", function()
+    -- Real buffer names are needed so BufWinEnter can match files_by_path.
+    vim.api.nvim_buf_get_name = orig.buf_get_name
+    review_git.show_file = function(_, _, _, cb)
+      cb({ "base1" }, nil)
+    end
+
+    review.open(42)
+    assert.is_not_nil(review._get_session())
+
+    -- Dashboard plugins (snacks etc.) clean up their state (autocmds watching
+    -- window size, etc.) in BufWipeout/BufDelete handlers. Mimic that setup.
+    local dash_buf = vim.api.nvim_create_buf(false, true)
+    vim.bo[dash_buf].bufhidden = "wipe"
+    vim.bo[dash_buf].filetype = "snacks_dashboard"
+    local dash_win = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_set_buf(dash_win, dash_buf)
+    local cleaned = false
+    vim.api.nvim_create_autocmd({ "BufWipeout", "BufDelete" }, {
+      buffer = dash_buf,
+      callback = function()
+        cleaned = true
+      end,
+    })
+
+    -- Open a review file in a split, like native quickfix does from a special
+    -- window. This fires the session's BufWinEnter -> attach, which closes the
+    -- dashboard window. The wipe events it triggers must not be swallowed
+    -- (BufWinEnter must be nested), or the dashboard plugin's stale callbacks
+    -- error on the next WinResized.
+    vim.cmd("belowright split /wt/a.lua")
+
+    assert.is_false(vim.api.nvim_win_is_valid(dash_win))
+    assert.is_true(cleaned)
   end)
 
   it("aborts when pr_view fails", function()

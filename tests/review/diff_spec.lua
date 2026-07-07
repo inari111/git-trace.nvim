@@ -59,6 +59,16 @@ describe("review.ui.diff", function()
     vim.cmd.copen()
   end
 
+  ---Show a scratch buffer (buftype=nofile) with the given filetype in the
+  ---current window, mimicking a dashboard window.
+  local function show_special_buf(ft)
+    local win = vim.api.nvim_get_current_win()
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.bo[buf].filetype = ft
+    vim.api.nvim_win_set_buf(win, buf)
+    return win, buf
+  end
+
   local function notified_matching(pattern)
     for _, n in ipairs(notifications) do
       if type(n.msg) == "string" and n.msg:match(pattern) then
@@ -534,6 +544,108 @@ describe("review.ui.diff", function()
     ui_diff.attach(session, file, win)
 
     assert.is_true(qf_window_open())
+    assert.is_true(vim.wo[win].diff)
+  end)
+
+  for _, ft in ipairs({ "snacks_dashboard", "dashboard", "alpha", "ministarter", "starter", "startify" }) do
+    it(("closes a %s window so the diff fills the screen"):format(ft), function()
+      local session = make_session({ { path = "a.lua", status = "M", binary = false } })
+      local file = session.files[1]
+      review_git.show_file = function(_, _, _, cb)
+        cb({ "base1" }, nil)
+      end
+
+      -- Dashboard occupies the initial window; quickfix cannot reuse a special
+      -- window, so the file opens in a new split beside it (the bug scenario).
+      local dash_win = show_special_buf(ft)
+      vim.cmd("belowright split")
+      local win = open_file("a.lua", { "head1" })
+      assert.equals(2, win_count())
+
+      ui_diff.attach(session, file, win)
+
+      assert.is_false(vim.api.nvim_win_is_valid(dash_win))
+      assert.equals(2, win_count()) -- exactly the two diff panes
+      assert.is_true(vim.wo[win].diff)
+      assert.equals(win, session.main_win)
+    end)
+  end
+
+  it("keeps a normal second window open when a review file attaches", function()
+    local session = make_session({ { path = "a.lua", status = "M", binary = false } })
+    local file = session.files[1]
+    review_git.show_file = function(_, _, _, cb)
+      cb({ "base1" }, nil)
+    end
+
+    local other_win = vim.api.nvim_get_current_win()
+    vim.cmd("belowright split")
+    local win = open_file("a.lua", { "head1" })
+    assert.equals(2, win_count())
+
+    ui_diff.attach(session, file, win)
+
+    assert.is_true(vim.api.nvim_win_is_valid(other_win))
+    assert.equals(3, win_count()) -- normal window + base + main
+  end)
+
+  it("keeps a non-dashboard nofile window (e.g. a sidebar) open", function()
+    local session = make_session({ { path = "a.lua", status = "M", binary = false } })
+    local file = session.files[1]
+    review_git.show_file = function(_, _, _, cb)
+      cb({ "base1" }, nil)
+    end
+
+    local tree_win = show_special_buf("neo-tree")
+    vim.cmd("belowright split")
+    local win = open_file("a.lua", { "head1" })
+
+    ui_diff.attach(session, file, win)
+
+    assert.is_true(vim.api.nvim_win_is_valid(tree_win))
+    assert.equals(3, win_count())
+  end)
+
+  it("keeps a regular file window whose filetype collides with a dashboard", function()
+    local session = make_session({ { path = "a.lua", status = "M", binary = false } })
+    local file = session.files[1]
+    review_git.show_file = function(_, _, _, cb)
+      cb({ "base1" }, nil)
+    end
+
+    -- A listed file buffer (buftype == "") that happens to have ft=dashboard
+    -- must never be closed: buftype=nofile is required, not just the filetype.
+    local other_win = vim.api.nvim_get_current_win()
+    local buf = vim.api.nvim_create_buf(true, false)
+    vim.bo[buf].filetype = "dashboard"
+    vim.api.nvim_win_set_buf(other_win, buf)
+    vim.cmd("belowright split")
+    local win = open_file("a.lua", { "head1" })
+
+    ui_diff.attach(session, file, win)
+
+    assert.is_true(vim.api.nvim_win_is_valid(other_win))
+    assert.equals(3, win_count())
+  end)
+
+  it("closes both the dashboard and the git-trace quickfix window", function()
+    local session = make_session({ { path = "a.lua", status = "M", binary = false } })
+    local file = session.files[1]
+    review_git.show_file = function(_, _, _, cb)
+      cb({ "base1" }, nil)
+    end
+
+    local dash_win = show_special_buf("snacks_dashboard")
+    vim.cmd("belowright split")
+    local win = open_file("a.lua", { "head1" })
+    open_qf({ git_trace_review = session.pr.number })
+    assert.equals(3, win_count())
+
+    ui_diff.attach(session, file, win)
+
+    assert.is_false(vim.api.nvim_win_is_valid(dash_win))
+    assert.is_false(qf_window_open())
+    assert.equals(2, win_count())
     assert.is_true(vim.wo[win].diff)
   end)
 end)

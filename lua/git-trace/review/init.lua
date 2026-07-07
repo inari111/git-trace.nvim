@@ -99,8 +99,13 @@ function M.open(number)
 
     -- Drive the native diff whenever one of the PR's files is displayed.
     -- Scratch (gittrace://) and unrelated buffers fall through the lookup.
+    -- nested: attach closes windows (quickfix, dashboard) and swaps buffers;
+    -- the events those actions trigger (BufWipeout etc.) must reach other
+    -- plugins' autocmds — snacks.nvim, for one, tears down its dashboard
+    -- state in a BufWipeout handler and errors on stale windows otherwise.
     vim.api.nvim_create_autocmd("BufWinEnter", {
       group = session.augroup,
+      nested = true,
       callback = function(args)
         if M._session ~= session then
           return

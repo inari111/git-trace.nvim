@@ -79,6 +79,34 @@ local function close_qf_window()
   end
 end
 
+---Filetypes used by popular dashboard/greeter plugins. Quickfix cannot reuse
+---their special (buftype=nofile) windows and opens the review file in a small
+---split beside them instead, squeezing the diff.
+local DASHBOARD_FILETYPES = {
+  snacks_dashboard = true, -- snacks.nvim (LazyVim default)
+  dashboard = true, -- dashboard-nvim
+  alpha = true, -- alpha-nvim
+  ministarter = true, -- mini.starter
+  starter = true, -- mini.starter (old)
+  startify = true, -- vim-startify
+}
+
+---Close every dashboard window in the current tabpage except keep_win, so the
+---window the review file landed in expands to full size before the diff layout
+---is built on it. Dashboards self-close when a file opens in them; this covers
+---the case where quickfix opened the file in a split beside one instead.
+---@param keep_win integer window handle that must stay open
+local function close_dashboard_windows(keep_win)
+  for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    if w ~= keep_win and vim.api.nvim_win_is_valid(w) then
+      local buf = vim.api.nvim_win_get_buf(w)
+      if vim.bo[buf].buftype == "nofile" and DASHBOARD_FILETYPES[vim.bo[buf].filetype] then
+        pcall(vim.api.nvim_win_close, w, true)
+      end
+    end
+  end
+end
+
 ---Absolute worktree path of a file (the quickfix filename / files_by_path key).
 ---@param session GitTraceReviewSession
 ---@param file GitTraceReviewFile
@@ -380,6 +408,11 @@ function M.attach(session, file, win)
   -- Close the git-trace quickfix window (if open) before anything else, so
   -- `win` expands to full height before the diff/single layout is built on it.
   close_qf_window()
+
+  -- A dashboard window (snacks/alpha/…) cannot be reused by quickfix, which
+  -- opens the file in a small split beside it instead. Close it so the diff
+  -- fills the screen.
+  close_dashboard_windows(win)
 
   -- A previous file's base window may linger when quickfix reuses this window
   -- (:cnext). Tear it down before setting up the new file.
