@@ -18,6 +18,7 @@ local review_signs = require("git-trace.review.ui.signs")
 ---@field base_cache table<string, string[]>|nil  -- cached base revision content, keyed by path
 ---@field hunk_cache table<string, GitTraceHunk[]>|nil -- cached diff hunks, keyed by path
 ---@field saved_winopts table<integer, table>|nil -- diff-sensitive winopts, keyed by window handle
+---@field saved_diffopt string|nil -- user's diffopt saved while the enhanced diff flags are applied
 ---@field base_win integer|nil -- window handle of the base (left) side of the active diff
 ---@field base_buf integer|nil -- scratch buffer handle of the base side
 ---@field main_win integer|nil -- window handle of the worktree file (right) side
@@ -285,7 +286,11 @@ function M.close()
   end
 
   local session = M._session
-  ui_diff.teardown(session)
+  -- teardown restores the diffopt lease itself (via close_diff); guard it so a
+  -- throw there cannot skip the cleanup below, then restore diffopt again as a
+  -- belt-and-suspenders in case teardown never reached close_diff.
+  pcall(ui_diff.teardown, session)
+  ui_diff.restore_diffopt(session)
   pcall(vim.api.nvim_del_augroup_by_id, session.augroup)
   qflist.clear()
   wipe_worktree_buffers(session.worktree)

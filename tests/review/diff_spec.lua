@@ -104,6 +104,8 @@ describe("review.ui.diff", function()
     orig.notify = vim.notify
     orig.keymaps = config.values.review.keymaps
     orig.close_qf_on_open = config.values.review.close_qf_on_open
+    -- show_diff mutates the global diffopt; snapshot it so tests stay isolated.
+    orig.diffopt = vim.o.diffopt
     notifications = {}
     vim.notify = function(msg, level)
       table.insert(notifications, { msg = msg, level = level })
@@ -121,6 +123,7 @@ describe("review.ui.diff", function()
     vim.notify = orig.notify
     config.values.review.keymaps = orig.keymaps
     config.values.review.close_qf_on_open = orig.close_qf_on_open
+    vim.o.diffopt = orig.diffopt
     pcall(vim.cmd, "silent! cclose")
     pcall(vim.cmd, "silent! only")
     pcall(vim.cmd, "silent! diffoff!")
@@ -651,5 +654,127 @@ describe("review.ui.diff", function()
     assert.is_false(qf_window_open())
     assert.equals(2, win_count())
     assert.is_true(vim.wo[win].diff)
+  end)
+
+  ---True if `diffopt` (comma list) contains `flag` as a whole entry.
+  local function diffopt_has(flag)
+    for opt in vim.gsplit(vim.o.diffopt, ",", { plain = true, trimempty = true }) do
+      if opt == flag then
+        return true
+      end
+    end
+    return false
+  end
+
+  it("applies the readable diff flags and preserves the user's other diffopt", function()
+    vim.o.diffopt = "internal,filler,context:3,foldcolumn:2,linematch:0,algorithm:myers"
+    local session = make_session({ { path = "a.lua", status = "M", binary = false } })
+    local file = session.files[1]
+    review_git.show_file = function(_, _, _, cb)
+      cb({ "base1" }, nil)
+    end
+    local win = open_file("a.lua", { "head1" })
+
+    ui_diff.attach(session, file, win)
+
+    -- Enforced flags are on, overriding the user's conflicting linematch/algorithm.
+    assert.is_true(diffopt_has("linematch:60"))
+    assert.is_true(diffopt_has("algorithm:histogram"))
+    assert.is_true(diffopt_has("indent-heuristic"))
+    assert.is_false(diffopt_has("linematch:0"))
+    assert.is_false(diffopt_has("algorithm:myers"))
+    -- Unrelated user flags are kept.
+    assert.is_true(diffopt_has("context:3"))
+    assert.is_true(diffopt_has("foldcolumn:2"))
+    -- The original is saved verbatim for restore on close.
+    assert.equals("internal,filler,context:3,foldcolumn:2,linematch:0,algorithm:myers", session.saved_diffopt)
+  end)
+
+  it("releases the diffopt lease on teardown (diff no longer on screen)", function()
+    vim.o.diffopt = "internal,filler,context:5"
+    local session = make_session({ { path = "a.lua", status = "M", binary = false } })
+    local file = session.files[1]
+    review_git.show_file = function(_, _, _, cb)
+      cb({ "base1" }, nil)
+    end
+    local win = open_file("a.lua", { "head1" })
+
+    ui_diff.attach(session, file, win)
+    assert.is_true(diffopt_has("linematch:60"))
+
+    -- The lease is held only while a review diff is visible; teardown (]f/[f,
+    -- toggle, close) releases it so unrelated diffs are not left enhanced.
+    ui_diff.teardown(session)
+    assert.equals("internal,filler,context:5", vim.o.diffopt)
+    assert.is_nil(session.saved_diffopt)
+  end)
+
+  it("re-applies the diffopt lease each time the diff is shown", function()
+    vim.o.diffopt = "internal,filler"
+    local session = make_session({ { path = "a.lua", status = "M", binary = false } })
+    local file = session.files[1]
+    review_git.show_file = function(_, _, _, cb)
+      cb({ "base1" }, nil)
+    end
+    local win = open_file("a.lua", { "head1" })
+
+    ui_diff.attach(session, file, win)
+    assert.is_true(diffopt_has("linematch:60"))
+
+    ui_diff.toggle(session) -- to single view: lease released
+    assert.is_false(diffopt_has("linematch:60"))
+
+    ui_diff.toggle(session) -- back to diff: lease re-taken
+    assert.is_true(diffopt_has("linematch:60"))
+  end)
+
+  it("forces off a diff git-trace leaked onto a window before re-attaching", function()
+    -- Single view (diff_enabled=false): attach must not leave a stray diff we own
+    -- on the window. Simulate our leak: diff on + a saved_winopts fingerprint for
+    -- this window (set when we diffthis it) but no tracked main_win for close_diff
+    -- to clean up. The scoped guard must clear it AND restore the saved winopts.
+    local session = make_session({ { path = "a.lua", status = "M", binary = false } })
+    session.diff_enabled = false
+    local file = session.files[1]
+    local win = open_file("a.lua", { "head1" })
+
+    -- Snapshot the real winopts (as save_winopts would) so restore_winopts sets
+    -- every SAVED_WINOPTS key back; override wrap to prove it is restored.
+    vim.wo[win].wrap = false
+    local snap = {}
+    for _, name in ipairs({ "wrap", "foldmethod", "foldcolumn", "foldenable", "scrollbind", "cursorbind", "cursorline" }) do
+      snap[name] = vim.wo[win][name]
+    end
+    snap.wrap = true
+    vim.api.nvim_win_call(win, function()
+      vim.cmd.diffthis()
+    end)
+    session.saved_winopts = { [win] = snap }
+    assert.is_true(vim.wo[win].diff)
+
+    ui_diff.attach(session, file, win)
+
+    assert.is_false(vim.wo[win].diff)
+    assert.is_true(vim.wo[win].wrap) -- restored from the fingerprint
+    assert.is_nil(session.saved_winopts[win])
+    assert.equals(1, win_count())
+  end)
+
+  it("leaves a user's own unrelated diff untouched on attach", function()
+    -- A diff with no git-trace fingerprint (saved_winopts[win] nil) belongs to the
+    -- user; the guard must not diffoff it.
+    local session = make_session({ { path = "a.lua", status = "M", binary = false } })
+    session.diff_enabled = false
+    local file = session.files[1]
+    local win = open_file("a.lua", { "head1" })
+
+    vim.api.nvim_win_call(win, function()
+      vim.cmd.diffthis()
+    end)
+    assert.is_true(vim.wo[win].diff)
+
+    ui_diff.attach(session, file, win)
+
+    assert.is_true(vim.wo[win].diff) -- left alone
   end)
 end)

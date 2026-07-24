@@ -6,7 +6,26 @@ local M = {}
 
 ---Window-local options that :diffthis clobbers and :diffoff resets to Vim
 ---defaults rather than the user's values, so we save and restore them ourselves.
-local SAVED_WINOPTS = { "wrap", "foldmethod", "foldcolumn", "foldenable", "scrollbind", "cursorbind" }
+---`cursorline` is not touched by diffthis but we enable it for the diff (see
+---show_diff), so it is saved here to be restored to the user's value on close.
+local SAVED_WINOPTS = { "wrap", "foldmethod", "foldcolumn", "foldenable", "scrollbind", "cursorbind", "cursorline" }
+
+---diffopt flags we force on while a review diff is shown, for a far more
+---readable diff than Neovim's default (`internal,filler,closeoff`):
+--- - linematch:60  aligns unchanged lines inside a changed block so only the
+---   genuinely changed lines light up, instead of the whole block reading as one
+---   solid DiffChange region (the "everything looks selected" effect).
+--- - algorithm:histogram + indent-heuristic  produce cleaner, more intuitive
+---   hunk boundaries than the default Myers diff.
+---The user's other diffopt flags are preserved; only these keys are overridden.
+local DIFFOPT_ENFORCED = {
+  "internal",
+  "filler",
+  "closeoff",
+  "linematch:60",
+  "algorithm:histogram",
+  "indent-heuristic",
+}
 
 ---@param msg string
 ---@param level integer
@@ -144,6 +163,55 @@ local function restore_winopts(session, win)
   session.saved_winopts[win] = nil
 end
 
+---Merge `DIFFOPT_ENFORCED` into `current` (a `diffopt` string), overriding any
+---existing flag that shares the same key (the part before `:`) and preserving
+---every other flag the user set. Pure function.
+---@param current string
+---@return string
+local function merged_diffopt(current)
+  local enforced_keys = {}
+  for _, flag in ipairs(DIFFOPT_ENFORCED) do
+    enforced_keys[flag:match("^[^:]+")] = true
+  end
+
+  local kept = {}
+  for flag in vim.gsplit(current, ",", { plain = true, trimempty = true }) do
+    if not enforced_keys[flag:match("^[^:]+")] then
+      table.insert(kept, flag)
+    end
+  end
+  for _, flag in ipairs(DIFFOPT_ENFORCED) do
+    table.insert(kept, flag)
+  end
+  return table.concat(kept, ",")
+end
+
+---Lease the readable diff flags for as long as a review diff is on screen,
+---snapshotting the user's current `diffopt` so restore_diffopt can put it back.
+---`diffopt` is a *global* option, so this affects every diff while the lease is
+---held; close_diff releases it the moment the diff is torn down (toggle to
+---single view, file navigation, or session close), keeping the blast radius to
+---the window in which a review diff is actually visible. Idempotent while the
+---lease is held (saved only on the first call).
+---@param session GitTraceReviewSession
+local function ensure_diffopt(session)
+  if session.saved_diffopt == nil then
+    session.saved_diffopt = vim.o.diffopt
+  end
+  vim.o.diffopt = merged_diffopt(session.saved_diffopt)
+end
+
+---Release the diffopt lease taken by ensure_diffopt, restoring the user's
+---snapshot. No-op if no lease is held. Called from close_diff (every teardown)
+---and, defensively, from review.close.
+---@param session GitTraceReviewSession
+function M.restore_diffopt(session)
+  if session.saved_diffopt ~= nil then
+    vim.o.diffopt = session.saved_diffopt
+    session.saved_diffopt = nil
+  end
+end
+
 ---Tear down the active diff layout: close the base window, turn diff off on the
 ---main window and restore its saved options. Clears the recorded handles.
 ---@param session GitTraceReviewSession
@@ -151,6 +219,10 @@ local function close_diff(session)
   -- Invalidate any base-fetch callback still in flight (see M.show_diff) so it
   -- cannot rebuild the diff layout after we have just torn it down.
   session.diff_request_id = (session.diff_request_id or 0) + 1
+
+  -- Release the global diffopt lease first, before any window op that could
+  -- throw, so the user's diffopt is always restored even on a partial teardown.
+  M.restore_diffopt(session)
 
   if session.base_win and vim.api.nvim_win_is_valid(session.base_win) then
     pcall(vim.api.nvim_win_close, session.base_win, true)
@@ -307,36 +379,59 @@ function M.show_diff(session, file, win)
     review_signs.clear(main_buf)
     local base_buf = create_base_buf(session, file, main_buf, lines)
 
-    -- Save the main window's diff-sensitive options before diffthis touches them.
+    -- Apply the readable diff flags (linematch etc.) before diffthis renders.
+    ensure_diffopt(session)
+
+    -- Save the main window's diff-sensitive options before diffthis touches them,
+    -- and record it as the main window up front: if the split/diffthis below
+    -- throws (e.g. E36 "not enough room"), close_diff can then find and roll back
+    -- the window state instead of leaking a half-built diff.
     save_winopts(session, win)
+    session.main_win = win
 
     -- leftabove vsplit duplicates the worktree file into a new left window and
-    -- focuses it; we then swap in the base buffer.
-    vim.api.nvim_set_current_win(win)
-    vim.cmd({ cmd = "vsplit", mods = { split = "aboveleft" } })
-    local base_win = vim.api.nvim_get_current_win()
-    vim.api.nvim_win_set_buf(base_win, base_buf)
+    -- focuses it; we then swap in the base buffer. Recorded resources are set on
+    -- the session as they are created so the rollback below can reach them.
+    local ok, err = pcall(function()
+      vim.api.nvim_set_current_win(win)
+      vim.cmd({ cmd = "vsplit", mods = { split = "aboveleft" } })
+      session.base_win = vim.api.nvim_get_current_win()
+      vim.api.nvim_win_set_buf(session.base_win, base_buf)
+      session.base_buf = base_buf
 
-    vim.api.nvim_win_call(base_win, function()
-      vim.cmd.diffthis()
-    end)
-    vim.api.nvim_win_call(win, function()
-      vim.cmd.diffthis()
+      vim.api.nvim_win_call(session.base_win, function()
+        vim.cmd.diffthis()
+      end)
+      vim.api.nvim_win_call(win, function()
+        vim.cmd.diffthis()
+      end)
+
+      -- Show the whole file, not just the changed hunks: diff mode
+      -- (foldmethod=diff) folds unchanged regions away by default. Disabling
+      -- fold-closing on both panes keeps every line visible. foldenable is in
+      -- SAVED_WINOPTS, so the main window's original value is restored on close.
+      vim.wo[session.base_win].foldenable = false
+      vim.wo[win].foldenable = false
+
+      -- Highlight the current line on both panes so it is easy to see which line
+      -- the (scrollbind/cursorbind-synced) cursor is on across the split. The
+      -- main window's original value is in SAVED_WINOPTS and restored on close;
+      -- the base window is closed wholesale on teardown, so it needs no restore.
+      vim.wo[session.base_win].cursorline = true
+      vim.wo[win].cursorline = true
     end)
 
-    -- Show the whole file, not just the changed hunks: diff mode
-    -- (foldmethod=diff) folds unchanged regions away by default. Disabling
-    -- fold-closing on both panes keeps every line visible. foldenable is in
-    -- SAVED_WINOPTS, so the main window's original value is restored on close.
-    vim.wo[base_win].foldenable = false
-    vim.wo[win].foldenable = false
+    if not ok then
+      -- Roll back everything built so far: close_diff restores winopts, the
+      -- diffopt lease, and closes the base window (wiping the scratch buffer).
+      close_diff(session)
+      pcall(vim.api.nvim_buf_delete, base_buf, { force = true })
+      notify("Failed to build diff view: " .. tostring(err), vim.log.levels.ERROR)
+      return
+    end
 
     -- Keep focus on the real worktree file so LSP and edits target it.
     vim.api.nvim_set_current_win(win)
-
-    session.base_win = base_win
-    session.base_buf = base_buf
-    session.main_win = win
   end)
 end
 
@@ -424,6 +519,21 @@ function M.attach(session, file, win)
   -- A previous file's base window may linger when quickfix reuses this window
   -- (:cnext). Tear it down before setting up the new file.
   close_diff(session)
+
+  -- Defensive catch-all for a diff WE leaked onto `win` (close_diff only cleans
+  -- the tracked main_win, so a lost handle can strand our diff here). Otherwise
+  -- :cnext dragging a fresh file into a still-diffed window renders the whole
+  -- buffer as changed -- the reported "the diff looks range-selected" symptom
+  -- after ]f/[f. Scoped by saved_winopts[win] (our fingerprint, set only when we
+  -- diffthis'd this window) so a user's own unrelated diff is left untouched;
+  -- and we restore the saved winopts we would otherwise strand.
+  if vim.wo[win].diff and session.saved_winopts and session.saved_winopts[win] then
+    pcall(vim.api.nvim_win_call, win, function()
+      vim.cmd.diffoff()
+    end)
+    restore_winopts(session, win)
+  end
+
   vim.w[win].git_trace_attached = nil
 
   -- Wire keymaps onto the worktree file buffer for every kind except deleted
