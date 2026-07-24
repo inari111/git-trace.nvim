@@ -19,6 +19,28 @@ function M.setup(opts)
   vim.api.nvim_create_user_command("GitTraceOpen", function(cmd_opts)
     M.browse_open(cmd_opts)
   end, { force = true, range = true, desc = "Open file/selection on GitHub" })
+
+  vim.api.nvim_create_user_command("GitTraceReview", function(cmd_opts)
+    local review = require("git-trace.review")
+    if cmd_opts.args ~= nil and cmd_opts.args ~= "" then
+      local number = tonumber(cmd_opts.args)
+      if not number or number ~= math.floor(number) or number < 1 then
+        vim.notify("[git-trace] Invalid PR number: " .. cmd_opts.args, vim.log.levels.ERROR)
+        return
+      end
+      review.open(number)
+    else
+      review.open(nil)
+    end
+  end, { force = true, nargs = "?", desc = "Review a GitHub PR in Neovim" })
+
+  vim.api.nvim_create_user_command("GitTraceReviewClose", function()
+    require("git-trace.review").close()
+  end, { force = true, desc = "Close the current PR review session" })
+
+  vim.api.nvim_create_user_command("GitTraceReviewClean", function()
+    require("git-trace.review").clean()
+  end, { force = true, desc = "Remove all git-trace review worktrees" })
 end
 
 ---Open PR for the current cursor line.
